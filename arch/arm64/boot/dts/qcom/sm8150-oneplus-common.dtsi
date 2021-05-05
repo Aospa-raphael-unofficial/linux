@@ -13,6 +13,8 @@
 #include "pm8150b.dtsi"
 #include "pm8150l.dtsi"
 
+/delete-node/ &rmtfs_mem;
+
 / {
 	compatible = "qcom,sm8150-mtp", "qcom,sm8150";
 
@@ -38,6 +40,34 @@
 		regulator-boot-on;
 
 		vin-supply = <&vph_pwr>;
+	};
+
+	reserved-memory {
+		/* The rmtfs_mem needs to be guarded due to "XPU limitations"
+		 * it is otherwise possible for an allocation adjacent to the
+		 * rmtfs_mem region to trigger an XPU violation, causing a crash.
+		 */
+		// rmtfs_lower_guard: memory@f2900000 {
+		// 	no-map;
+		// 	reg = <0 0xf2900000 0 0x1000>;
+		// };
+		/*
+		 * The rmtfs memory region in downstream is 'dynamically allocated'
+		 * but given the same address every time. Hard code it as this address is
+		 * where the modem firmware expects it to be.
+		 */
+		rmtfs_mem: memory@f2901000 {
+			compatible = "qcom,rmtfs-mem";
+			reg = <0x0 0xf2901000 0x0 0x200000>;
+			no-map;
+
+			qcom,client-id = <1>;
+			qcom,vmid = <15>;
+		};
+		// rmtfs_upper: memory@f2902000 {
+		// 	no-map;
+		// 	reg = <0 0xf2902000 0 0x1000>;
+		// };
 	};
 };
 
@@ -425,6 +455,46 @@
 // Some of these might be guacamole specific
 &tlmm {
 	gpio-reserved-ranges = <0 4>, <126 4>;
+
+	tp_irq_active: tp-irq-active {
+		mux {
+			pins = "gpio122";
+			function = "gpio";
+		};
+
+		config {
+			pins = "gpio122";
+			drive-strength = <0x08>;
+			bias-disable;
+			input-enable;
+		};
+	};
+
+	tp_rst_active: tp-rst-active {
+		mux {
+			pins = "gpio54";
+			function = "gpio";
+		};
+
+		config {
+			pins = "gpio54";
+			drive-strength = <0x08>;
+			bias-disable;
+		};
+	};
+
+	tp_1v8_active: tp-1v8-active {
+		mux {
+			pins = "gpio119";
+			function = "gpio";
+		};
+
+		config {
+			pins = "gpio119";
+			drive-strength = <0x08>;
+			bias-pull-up;
+		};
+	};
 };
 
 &ufs_mem_hc {
