@@ -2177,6 +2177,7 @@
 				 <&apps_smmu 0x512 0x0000>;
 			interconnects = <&aggre2_noc MASTER_CRYPTO_CORE_0 0 &mc_virt SLAVE_EBI_CH0 0>;
 			interconnect-names = "memory";
+			status = "disable";
 		};
 
 		tcsr_mutex: hwlock@1f40000 {
