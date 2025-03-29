@@ -1105,10 +1105,10 @@ static irqreturn_t nvt_ts_work_func(int irq, void *data)
 				// report pen data
 				pen_x = (uint32_t)(point_data[67] << 8) + (uint32_t)(point_data[68]);
 				pen_y = (uint32_t)(point_data[69] << 8) + (uint32_t)(point_data[70]);
-				if (pen_x >= ts->abs_x_max * 2 - 1) {
+				if (pen_x >= ts->abs_x_max * 8 - 1) {
 					pen_x -= 1;
 				}
-				if (pen_y >= ts->abs_y_max * 2 - 1) {
+				if (pen_y >= ts->abs_y_max * 8 - 1) {
 					pen_y -= 1;
 				}
 				pen_pressure = (uint32_t)(point_data[71] << 8) + (uint32_t)(point_data[72]);
@@ -1419,8 +1419,8 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 		int x_max, y_max;
 
 		if (ts->wgp_stylus) {
-			x_max = ts->abs_x_max * 2 - 1;
-			y_max = ts->abs_y_max * 2 - 1;
+			x_max = ts->abs_x_max * 8 - 1;
+			y_max = ts->abs_y_max * 8 - 1;
 		} else {
 			x_max = ts->abs_x_max - 1;
 			y_max = ts->abs_y_max - 1;
