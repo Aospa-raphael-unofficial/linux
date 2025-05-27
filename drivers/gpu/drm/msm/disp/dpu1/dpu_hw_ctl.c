@@ -559,16 +559,13 @@ static void dpu_hw_ctl_intf_cfg_v1(struct dpu_hw_ctl *ctx,
 {
 	struct dpu_hw_blk_reg_map *c = &ctx->hw;
 	u32 intf_active = 0;
-	u32 dsc_active = 0;
 	u32 wb_active = 0;
 	u32 cwb_active = 0;
+	u32 merge_3d_active = 0;
 	u32 mode_sel = 0;
-	u32 cdm_active;
-	u32 intf_active;
-	u32 wb_active;
 	u32 dsc_active;
-	u32 merge_3d_active;
-
+	u32 cdm_active;
+	
 	/* CTL_TOP[31:28] carries group_id to collate CTL paths
 	 * per VM. Explicitly disable it until VM support is
 	 * added in SW. Power on reset value is not disable.
