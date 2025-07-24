@@ -39,6 +39,12 @@ properties:
 
     additionalProperties: false
 
+  maxim,enable-gpio:
+    maxItems: 1
+    description: |
+      GPIO for enable control. If the valid GPIO is provided then externally
+      enable control will be considered.
+
 required:
   - compatible
   - reg
@@ -55,6 +61,8 @@ examples:
         pmic@69 {
             compatible = "maxim,max77826";
             reg = <0x69>;
+            
+            maxim,enable-gpio = <&pmic 102 GPIO_ACTIVE_HIGH>;
 
             regulators {
                 LDO2 {
