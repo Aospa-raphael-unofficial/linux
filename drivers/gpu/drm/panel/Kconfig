@@ -393,6 +393,18 @@ config DRM_PANEL_LG_LG4573
 	  Say Y here if you want to enable support for LG4573 RGB panel.
 	  To compile this driver as a module, choose M here.
 
+config DRM_PANEL_LG_NT37280_LH568WF3_ED01
+	tristate "LG LH568WF3-ED01 AMOLED panel with a NT37280 controller"
+	depends on GPIOLIB && OF && REGULATOR
+	depends on DRM_MIPI_DSI
+	depends on BACKLIGHT_CLASS_DEVICE
+	select DRM_DISPLAY_DSC_HELPER
+	select DRM_DISPLAY_HELPER
+	help
+	  Say Y here if you want to enable support for the LG NT37280 AMOLED
+	  panel. The panel has a 1080x2280 60/90Hz AMOLED display with DSC
+	  compression and a MIPI-DSI interface. 
+
 config DRM_PANEL_LG_SW43408
 	tristate "LG SW43408 panel"
 	depends on OF
