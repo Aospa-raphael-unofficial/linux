@@ -233,6 +233,12 @@ properties:
       asserts utmi_sleep_n.
     type: boolean
 
+  snps,ssp-u3-u0-quirk:
+    description:
+      When set core always changes PHY power state P2, before attempting a
+      U3 exit handshake.
+    type: boolean
+
   snps,hird-threshold:
     description: HIRD threshold
     $ref: /schemas/types.yaml#/definitions/uint8
