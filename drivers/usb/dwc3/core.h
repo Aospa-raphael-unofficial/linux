@@ -1384,6 +1384,7 @@ struct dwc3 {
 	unsigned		tx_de_emphasis_quirk:1;
 	unsigned		ssp_u3_u0_quirk:1;
 	unsigned		tx_de_emphasis:2;
+	unsigned		disable_clk_gating:1;
 
 	unsigned		dis_metastability_quirk:1;
 
