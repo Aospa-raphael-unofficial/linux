@@ -1091,6 +1091,9 @@ static void dwc3_core_setup_global_control(struct dwc3 *dwc)
 	if (DWC3_VER_IS_PRIOR(DWC3, 190A))
 		reg |= DWC3_GCTL_U2RSTECN;
 
+	if (dwc->disable_clk_gating)
+		reg |= DWC3_GCTL_DSBLCLKGTNG;
+
 	dwc3_writel(dwc->regs, DWC3_GCTL, reg);
 }
 
@@ -1836,6 +1839,8 @@ static void dwc3_get_properties(struct dwc3 *dwc)
 				"snps,tx_de_emphasis_quirk");
 	dwc->ssp_u3_u0_quirk = device_property_read_bool(dev,
 				"snps,ssp-u3-u0-quirk");
+	dwc->disable_clk_gating = device_property_read_bool(dev,
+					"snps,disable-clk-gating");
 	device_property_read_u8(dev, "snps,tx_de_emphasis",
 				&tx_de_emphasis);
 	device_property_read_string(dev, "snps,hsphy_interface",
