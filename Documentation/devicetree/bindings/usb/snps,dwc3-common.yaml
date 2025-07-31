@@ -239,6 +239,11 @@ properties:
       U3 exit handshake.
     type: boolean
 
+  snps,disable-clk-gating:
+    description:
+      When set disable controller's internal clock gating. Default it is enabled.
+    type: boolean
+
   snps,hird-threshold:
     description: HIRD threshold
     $ref: /schemas/types.yaml#/definitions/uint8
