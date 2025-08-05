@@ -505,7 +505,7 @@
 		compatible = "lionsemi,ln8000";
 		reg = <0x51>;
 
-		status = "okay";
+		status = "disabled";
 
 		irq-gpios = <&tlmm 36 0x2002>;
 
@@ -683,7 +683,13 @@
 &pm8150b_fg {
 	status = "okay";
 	monitored-battery = <&battery>;
+	power-supplies = <&pm8150b_charger>;
 	//power-supplies = <&ln8000_charger>;
+};
+
+&pm8150b_charger {
+	status = "okay";
+	monitored-battery = <&battery>;
 };
 
 &pm8150b_typec {
@@ -705,8 +711,7 @@
 		sink-pdos = <PDO_FIXED(5000, 3000,
 					 PDO_FIXED_DUAL_ROLE |
 					 PDO_FIXED_USB_COMM |
-					 PDO_FIXED_DATA_SWAP)
-					 PDO_VAR(5000, 9000, 3000)>;
+					 PDO_FIXED_DATA_SWAP)>;
 
 		op-sink-microwatt = <10000000>;
 
