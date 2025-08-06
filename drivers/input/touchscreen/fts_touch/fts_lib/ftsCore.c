@@ -399,12 +399,24 @@ int setScanMode(u8 mode, u8 settings)
   */
 int setFeatures(u8 feat, u8 *settings, int size)
 {
-	u8 cmd[2 + size];
+	u8 *cmd;
+	char *buff;
 	int i = 0;
 	int ret;
-	char buff[(2 + 1) * size + 1];
-	int buff_len = sizeof(buff);
+	int cmd_len = 2 + size;
+	int buff_len = (2 + 1) * size + 1;
 	int index = 0;
+
+	cmd = kmalloc(cmd_len * sizeof(u8), GFP_KERNEL);
+	buff = kmalloc(buff_len * sizeof(char), GFP_KERNEL);
+
+	if (!cmd || !buff) {
+		pr_err("%s: failed to allocate buffers... ERROR %08X\n",
+			__func__, ERROR_ALLOC);
+		kfree(cmd);
+		kfree(buff);
+		return ERROR_ALLOC;
+	}
 
 	pr_info("%s: Setting feature: feat = %02X !\n", __func__, feat);
 	cmd[0] = FTS_CMD_FEATURE;
@@ -412,16 +424,23 @@ int setFeatures(u8 feat, u8 *settings, int size)
 	for (i = 0; i < size; i++) {
 		cmd[2 + i] = settings[i];
 		index += scnprintf(buff + index, buff_len - index,
-					"%02X ", settings[i]);
+				   "%02X ", settings[i]);
 	}
+
 	pr_info("%s: Settings = %s\n", __func__, buff);
-	ret = fts_write(cmd, 2 + size);
-	/* use write instead of writeFw because can be called while the
-	 * interrupts are enabled */
+
+	ret = fts_write(cmd, cmd_len);
 	if (ret < OK) {
 		pr_err("%s: write failed...ERROR %08X !\n", __func__, ret);
-		return ret | ERROR_SET_FEATURE_FAIL;
+		ret |= ERROR_SET_FEATURE_FAIL;
 	}
+
+	kfree(cmd);
+	kfree(buff);
+
+	if (ret < OK)
+		return ret;
+
 	pr_info("%s: Setting feature OK!\n", __func__);
 	return OK;
 }
@@ -442,11 +461,23 @@ int setFeatures(u8 feat, u8 *settings, int size)
   */
 int writeSysCmd(u8 sys_cmd, u8 *sett, int size)
 {
-	u8 cmd[2 + size];
+	u8 *cmd;
+	char *buff;
 	int ret;
-	char buff[(2 + 1) * size + 1];
-	int buff_len = sizeof(buff);
+	int cmd_len = 2 + size;
+	int buff_len = (2 + 1) * size + 1;
 	int index = 0;
+
+	cmd = kmalloc(cmd_len * sizeof(u8), GFP_KERNEL);
+	buff = kmalloc(buff_len * sizeof(char), GFP_KERNEL);
+
+	if (!cmd || !buff) {
+		pr_err("%s: failed to allocate buffers... ERROR %08X\n",
+		       __func__, ERROR_ALLOC);
+		kfree(cmd);
+		kfree(buff);
+		return ERROR_ALLOC;
+	}
 
 	cmd[0] = FTS_CMD_SYSTEM;
 	cmd[1] = sys_cmd;
@@ -454,27 +485,31 @@ int writeSysCmd(u8 sys_cmd, u8 *sett, int size)
 	for (ret = 0; ret < size; ret++) {
 		cmd[2 + ret] = sett[ret];
 		index += scnprintf(buff + index, buff_len - index,
-					"%02X ", sett[ret]);
+				   "%02X ", sett[ret]);
 	}
-	pr_info("%s: Command = %02X %02X %s\n", __func__, cmd[0],
-		 cmd[1], buff);
+
+	pr_info("%s: Command = %02X %02X %s\n", __func__, cmd[0], cmd[1], buff);
 	pr_info("%s: Writing Sys command...\n", __func__);
-	if (sys_cmd != SYS_CMD_LOAD_DATA)
-		ret = fts_writeFwCmd(cmd, 2 + size);
-	else {
-		if (size >= 1)
+
+	if (sys_cmd != SYS_CMD_LOAD_DATA) {
+		ret = fts_writeFwCmd(cmd, cmd_len);
+	} else {
+		if (size >= 1) {
 			ret = requestSyncFrame(sett[0]);
-		else {
+		} else {
 			pr_err("%s: No setting argument! ERROR %08X\n",
-				__func__, ERROR_OP_NOT_ALLOW);
-			return ERROR_OP_NOT_ALLOW;
+			       __func__, ERROR_OP_NOT_ALLOW);
+			ret = ERROR_OP_NOT_ALLOW;
 		}
 	}
+	
 	if (ret < OK)
 		pr_err("%s: ERROR %08X\n", __func__, ret);
 	else
 		pr_info("%s: FINISHED!\n", __func__);
 
+	kfree(cmd);
+	kfree(buff);
 	return ret;
 }
 /** @}*/
@@ -1118,10 +1153,18 @@ int writeHostDataMemory(u8 type, u8 *data, u8 msForceLen, u8 msSenseLen,
 {
 	int res;
 	int size = (msForceLen * msSenseLen) + (ssForceLen + ssSenseLen);
+	int total_size = size + SYNCFRAME_DATA_HEADER;
 	u8 sett = SPECIAL_WRITE_HOST_MEM_TO_FLASH;
-	u8 temp[size + SYNCFRAME_DATA_HEADER];
+	u8 *temp;
 
-	memset(temp, 0, size + SYNCFRAME_DATA_HEADER);
+	temp = kmalloc(total_size * sizeof(u8), GFP_KERNEL);
+	if (!temp) {
+		pr_err("%s: failed to allocate memory for temp buffer... ERROR %08X\n",
+			__func__, ERROR_ALLOC);
+		return ERROR_ALLOC;
+	}
+
+	memset(temp, 0, total_size);
 	pr_info("%s: Starting to write Host Data Memory\n", __func__);
 
 	temp[0] = 0x5A;
@@ -1135,8 +1178,9 @@ int writeHostDataMemory(u8 type, u8 *data, u8 msForceLen, u8 msSenseLen,
 
 	pr_info("%s: Write Host Data Memory in buffer...\n", __func__);
 	res = fts_writeU8UX(FTS_CMD_FRAMEBUFFER_W, BITS_16,
-			    ADDR_FRAMEBUFFER, temp, size +
-			    SYNCFRAME_DATA_HEADER);
+			    ADDR_FRAMEBUFFER, temp, total_size);
+
+	kfree(temp);
 
 	if (res < OK) {
 		pr_err("%s: error while writing the buffer! ERROR %08X\n",
