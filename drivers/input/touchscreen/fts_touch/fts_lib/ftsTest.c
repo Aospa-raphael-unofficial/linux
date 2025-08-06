@@ -597,7 +597,7 @@ int checkLimitsMinMax(short *data, int row, int column, int min, int max)
 		for (j = 0; j < column; j++) {
 			if (data[i * column + j] < min || data[i * column + j] >
 			    max) {
-				pr_debug("%s: Node[%d,%d] = %d exceed limit [%d, %d]\n",
+				pr_debug("checkLimitsMinMax: Node[%d,%d] = %d exceed limit [%d, %d]\n",
 					i, j, data[i * column + j], min, max);
 				count++;
 			}
@@ -723,7 +723,7 @@ int checkLimitsMap(i8 *data, int row, int column, int *min, int *max)
 		for (j = 0; j < column; j++) {
 			if (data[i * column + j] < min[i * column + j] ||
 			    data[i * column + j] > max[i * column + j]) {
-				pr_debug("%s: Node[%d,%d] = %d exceed limit [%d, %d]\n",
+				pr_debug("checkLimitsMap: Node[%d,%d] = %d exceed limit [%d, %d]\n",
 					i, j, data[i * column + j],
 					min[i * column + j],
 					max[i * column + j]);
@@ -758,7 +758,7 @@ int checkLimitsMapTotal(short *data, int row, int column, int *min, int *max)
 		for (j = 0; j < column; j++) {
 			if (data[i * column + j] < min[i * column + j] ||
 			    data[i * column + j] > max[i * column + j]) {
-				pr_debug("%s: Node[%d,%d] = %d exceed limit [%d, %d]\n",
+				pr_debug("checkLimitsMapTotal: Node[%d,%d] = %d exceed limit [%d, %d]\n",
 					i, j, data[i * column + j],
 					min[i * column + j],
 					max[i * column + j]);
@@ -793,7 +793,7 @@ int checkLimitsMapFromU(u8 *data, int row, int column, int *min, int *max)
 		for (j = 0; j < column; j++) {
 			if (data[i * column + j] < min[i * column + j] ||
 			    data[i * column + j] > max[i * column + j]) {
-				pr_debug("%s: Node[%d,%d] = %d exceed limit [%d, %d]\n",
+				pr_debug("checkLimitsMapFromU: Node[%d,%d] = %d exceed limit [%d, %d]\n",
 					i, j, data[i * column + j],
 					min[i * column + j],
 					max[i * column + j]);
@@ -828,7 +828,7 @@ int checkLimitsMapTotalFromU(u16 *data, int row, int column, int *min, int *max)
 		for (j = 0; j < column; j++) {
 			if (data[i * column + j] < min[i * column + j] ||
 			    data[i * column + j] > max[i * column + j]) {
-				pr_debug("%s: Node[%d,%d] = %d exceed limit [%d, %d]\n",
+				pr_debug("checkLimitsMapTotalFromU: Node[%d,%d] = %d exceed limit [%d, %d]\n",
 					i, j, data[i * column + j],
 					min[i * column + j],
 					max[i * column + j]);
@@ -860,7 +860,7 @@ int checkLimitsMapAdj(u8 *data, int row, int column, int *max)
 	for (i = 0; i < row; i++) {
 		for (j = 0; j < column; j++) {
 			if (data[i * column + j] > max[i * column + j]) {
-				pr_debug("%s: Node[%d,%d] = %d exceed limit > %d\n",
+				pr_debug("checkLimitsMapAdj: Node[%d,%d] = %d exceed limit > %d\n",
 					i, j,
 					data[i * column + j],
 					max[i * column + j]);
@@ -892,7 +892,7 @@ int checkLimitsMapAdjTotal(u16 *data, int row, int column, int *max)
 	for (i = 0; i < row; i++) {
 		for (j = 0; j < column; j++) {
 			if (data[i * column + j] > max[i * column + j]) {
-				pr_debug("%s: Node[%d,%d] = %d exceed limit > %d\n",
+				pr_debug("checkLimitsMapAdjTotal: Node[%d,%d] = %d exceed limit > %d\n",
 					i, j,
 					data[i * column + j],
 					max[i * column + j]);
@@ -1443,7 +1443,7 @@ int production_test_ms_raw(const char *path_limits, int stop_on_fail,
 				if (ret != OK) {
 					pr_err("production_test_data: checkLimitsAdj MS RAW ADJH failed... ERROR COUNT = %d\n",
 						ret);
-					pr_err("%s MS RAW ADJ HORIZONTAL MIN/MAX:.................FAIL\n\n");
+					pr_err("MS RAW ADJ HORIZONTAL MIN/MAX:.................FAIL\n\n");
 					count_fail += 1;
 					if (stop_on_fail == 1)
 						goto ERROR;
@@ -2532,7 +2532,7 @@ int production_test_ms_cx(const char *path_limits, int stop_on_fail,
 			return ret;
 		}
 	} else
-		pr_info("%s MS CX LP TEST:.................SKIPPED\n");
+		pr_info("MS CX LP TEST:.................SKIPPED\n");
 
 	if ((todo->MutualKeyCx1 | todo->MutualKeyCx2 |
 	     todo->MutualKeyCxTotal) == 1) {
@@ -2938,7 +2938,7 @@ int production_test_ms_cx_lp(const char *path_limits, int stop_on_fail,
 	kfree(thresholds);
 	thresholds = NULL;
 
-	pr_info("%s MS LP CX2 MIN MAX TEST:\n");
+	pr_info("MS LP CX2 MIN MAX TEST:\n");
 	if (todo->MutualCx2LP == 1) {
 		ret = parseProductionTestLimits(path_limits, &limit_file,
 						MS_CX2_LP_MAP_MIN,
@@ -6780,12 +6780,19 @@ int tp_sensitivity_compute_gains(MutualSenseFrame *frame, short target,
 {
 	int ret = OK;
 	int i = 0;
-	u8 gains[frame->node_data_size];
+	u8 *gains;
 
 	if ((frame->node_data == NULL) || (frame->node_data_size == 0)) {
 		pr_err("%s: Invalid frame data passed as argument! ERROR %08X\n",
 			__func__, ERROR_OP_NOT_ALLOW);
 		return ERROR_OP_NOT_ALLOW;
+	}
+
+	gains = kmalloc(frame->node_data_size * sizeof(u8), GFP_KERNEL);
+	if (!gains) {
+		pr_err("%s: Failed to allocate memory for gains... ERROR %08X\n",
+			__func__, ERROR_ALLOC);
+		return ERROR_ALLOC;
 	}
 
 	memset(gains, 0, frame->node_data_size);
@@ -6826,8 +6833,10 @@ int tp_sensitivity_compute_gains(MutualSenseFrame *frame, short target,
 		ret = OK;
 	}
 
+	kfree(gains);
 	return ret;
 }
+
 
 /**
   * Perform the Post Calibration MS Test when the stimpad is down
