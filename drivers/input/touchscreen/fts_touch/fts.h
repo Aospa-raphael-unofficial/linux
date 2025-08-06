@@ -508,4 +508,8 @@ extern int fts_proc_remove(void);
 /* Bus reference tracking */
 int fts_set_bus_ref(struct fts_ts_info *info, u16 ref, bool enable);
 
+void release_all_touches(struct fts_ts_info *info);
+int check_feature_feasibility(struct fts_ts_info *info, unsigned int feature);
+void fts_input_report_key(struct fts_ts_info *info, int key_code);
+
 #endif

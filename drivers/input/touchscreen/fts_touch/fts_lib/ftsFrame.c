@@ -57,11 +57,6 @@ int getChannelsLength(void)
 	int ret;
 	u8 data[2];
 
-	if (data == NULL) {
-		pr_err("getChannelsLength: ERROR %08X\n", ERROR_ALLOC);
-		return ERROR_ALLOC;
-	}
-
 	ret = readConfig(ADDR_CONFIG_SENSE_LEN, data, 2);
 	if (ret < OK) {
 		pr_err("getChannelsLength: ERROR %08X\n", ret);
@@ -92,11 +87,6 @@ int getFrameData(u16 address, int size, short *frame)
 {
 	int i, j, ret;
 	u8 *data = (u8 *)kmalloc(size * sizeof(u8), GFP_KERNEL);
-
-	if (data == NULL) {
-		pr_err("getFrameData: ERROR %08X\n", ERROR_ALLOC);
-		return ERROR_ALLOC;
-	}
 
 	ret = fts_writeReadU8UX(FTS_CMD_FRAMEBUFFER_R, BITS_16, address, data,
 				size, DUMMY_FRAMEBUFFER);
