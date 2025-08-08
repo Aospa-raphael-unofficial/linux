@@ -1318,6 +1318,8 @@
 		st,regulator_dvdd = "vdd";
 		st,regulator_avdd = "avdd";
 		st,max-coords = <1079 2279>;
+
+		firmware-name = "ftm5_fw.ftb";
 	};
 };
 
