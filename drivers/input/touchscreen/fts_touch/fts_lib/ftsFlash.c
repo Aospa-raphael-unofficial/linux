@@ -70,69 +70,60 @@ int getFWdata(const char *pathToFile, u8 **data, int *size)
 	const struct firmware *fw = NULL;
 	struct device *dev = getDev();
 	struct fts_ts_info *info = NULL;
-	int res, from = 0;
-	char *path = (char *)pathToFile;
+	const char *fw_name = NULL;
+	int res;
 
-	if (dev != NULL)
-		info = dev_get_drvdata(dev);
+	if (!data || !size)
+		return -EINVAL;
 
 	pr_info("getFWdata starting ...\n");
-	if (pathToFile == NULL || strncmp(pathToFile, "NULL", 4) == 0) {
-		from = 1;
-		if (info != NULL && info->board)
-			path = (char *)info->board->fw_name;
-		else
-			path = PATH_FILE_FW;
+
+	if (!dev) {
+		pr_err("getFWdata: No device found! ERROR %08X\n", ERROR_OP_NOT_ALLOW);
+		return ERROR_OP_NOT_ALLOW;
 	}
-	/* keep the switch case because if the argument passed is null but
-	 * the option from .h is not set we still try to load from bin */
-	switch (from) {
-#ifdef FW_H_FILE
-	case 1:
-		pr_info("Read FW from .h file!\n");
-		*size = FW_SIZE_NAME;
-		*data = (u8 *)kmalloc((*size) * sizeof(u8), GFP_KERNEL);
-		if (*data == NULL) {
-			pr_err("getFWdata: Impossible to allocate memory! ERROR %08X\n",
-				ERROR_ALLOC);
-			return ERROR_ALLOC;
-		}
-		memcpy(*data, (u8 *)FW_ARRAY_NAME, (*size));
 
-		break;
-#endif
-	default:
-		pr_info("Read FW from BIN file %s !\n", path);
+	info = dev_get_drvdata(dev);
+	if (!info || !info->client) {
+		pr_err("getFWdata: Invalid driver data!\n");
+		return -ENODEV;
+	}
 
-		if (dev != NULL) {
-			res = request_firmware(&fw, path, dev);
-			if (res == 0) {
-				*size = fw->size;
-				*data = (u8 *)kmalloc((*size) * sizeof(u8),
-						      GFP_KERNEL);
-				if (*data == NULL) {
-					pr_err("getFWdata: Impossible to allocate memory! ERROR %08X\n",
-						ERROR_ALLOC);
-					release_firmware(fw);
-					return ERROR_ALLOC;
-				}
-				memcpy(*data, (u8 *)fw->data, (*size));
-				release_firmware(fw);
-			} else {
-				pr_err("getFWdata: No File found! ERROR %08X\n",
-					ERROR_FILE_NOT_FOUND);
-				return ERROR_FILE_NOT_FOUND;
-			}
+	if (pathToFile && strncmp(pathToFile, "NULL", 4) != 0) {
+		fw_name = pathToFile;
+		pr_info("getFWdata: Using firmware from argument: %s\n", fw_name);
+	} else {
+		res = device_property_read_string(&info->client->dev, "firmware-name", &fw_name);
+		if (res || !fw_name) {
+			pr_warn("getFWdata: 'firmware-name' not found in DT, using default\n");
+			fw_name = PATH_FILE_FW;
 		} else {
-			pr_err("getFWdata: No device found! ERROR %08X\n",
-				ERROR_OP_NOT_ALLOW);
-			return ERROR_OP_NOT_ALLOW;
+			pr_info("getFWdata: Using firmware from DT: %s\n", fw_name);
 		}
 	}
 
-	pr_info("getFWdata Finished!\n");
+	res = request_firmware(&fw, fw_name, &info->client->dev);
+	if (res) {
+		pr_err("getFWdata: request_firmware failed for '%s'! ERROR %08X\n",
+		       fw_name, ERROR_FILE_NOT_FOUND);
+		return ERROR_FILE_NOT_FOUND;
+	}
+
+	*size = fw->size;
+	*data = kmalloc(*size, GFP_KERNEL);
+	if (!*data) {
+		pr_err("getFWdata: kmalloc failed! ERROR %08X\n", ERROR_ALLOC);
+		release_firmware(fw);
+		return ERROR_ALLOC;
+	}
+
+	memcpy(*data, fw->data, *size);
+	release_firmware(fw);
+
+	pr_info("getFWdata: Firmware loaded successfully (%d bytes)\n", *size);
 	return OK;
 }
+
 
 
 /**
