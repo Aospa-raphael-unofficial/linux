@@ -508,7 +508,7 @@
 		interrupt-parent = <&tlmm>;
 		interrupts = <122 0x2800>;
 		vtouch-load = <600000>;
-		pinctrl-names = "pmx_ts_active","pmx_ts_suspend";
+		pinctrl-names = "default", "sleep";
 		pinctrl-0 = <&tp_active>;
 		pinctrl-1 = <&tp_int_suspend &tp_reset_suspend>;
 		goodix,reset-gpio = <&tlmm 54 0x0>;
@@ -520,23 +520,8 @@
 		goodix,panel-max-x = <1079>;
 		goodix,panel-max-y = <2339>;
 		goodix,panel-max-w = <127>;
-		goodix,panel-max-p = <127>;
-		goodix,panel-max-fod = <127>;
 		goodix,power-on-delay-us = <300000>; /*300ms*/
 		goodix,power-off-delay-us = <5000>;
-		goodix,cfg-name = "goodix_gt9886_cfg_f11.bin";
-		normal-cfg = [
-				];
-		sensor0 {
-				goodix,limit-name = "goodix_gt9886_limit_f11_second.tporder";
-				goodix,fw-name = "goodix_gt9886_fw_f11.bin";
-				goodix,x2x;
-				goodix,y2y;
-		};
-		sensor1 {
-				goodix,limit-name = "goodix_gt9886_limit_f11_first.tporder";
-				goodix,fw-name = "goodix_gt9886_fw_f11.bin";
-		};
 	};
 };
 
