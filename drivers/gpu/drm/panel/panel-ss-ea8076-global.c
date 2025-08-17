@@ -14,6 +14,15 @@
 #include <drm/drm_modes.h>
 #include <drm/drm_panel.h>
 
+#ifndef mipi_dsi_dcs_write_seq
+#define mipi_dsi_dcs_write_seq(dsi, seq...)                          \
+({                                                                   \
+        static const u8 d[] = { seq };                               \
+        mipi_dsi_dcs_write_buffer(dsi, d, sizeof(d));                \
+})
+#endif
+
+
 struct ss_ea8076_global {
 	struct drm_panel panel;
 	struct mipi_dsi_device *dsi;
