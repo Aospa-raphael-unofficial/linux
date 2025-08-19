@@ -650,6 +650,12 @@
 	};
 };
 
+&pm8150b_fg {
+	status = "okay";
+	monitored-battery = <&battery>;
+	//power-supplies = <&ln8000_charger>;
+};
+
 &pon_pwrkey {
 	status = "okay";
 };
