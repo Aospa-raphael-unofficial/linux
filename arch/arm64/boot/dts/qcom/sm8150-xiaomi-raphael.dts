@@ -554,7 +554,7 @@
 	vdda-supply = <&vreg_l3c_1p2>;
 	status = "okay";
 	panel@0 {
-		compatible = "ss,ea8076-global";
+		compatible = "samsung,ea8076";
 		reg = <0>;
 		status = "okay";
 		
