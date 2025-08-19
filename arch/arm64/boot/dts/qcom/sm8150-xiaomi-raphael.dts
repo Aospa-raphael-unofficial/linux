@@ -48,24 +48,6 @@
 		wifi0 = &wifi;
 	};
 
-	chosen {
-		#address-cells = <2>;
-		#size-cells = <2>;
-		ranges;
-
-		framebuffer: framebuffer@9c000000 {
-			compatible = "simple-framebuffer";
-			reg = <0 0x9c000000 0 0x2400000>;
-			status = "disabled";
-			width = <1080>;
-			height = <2340>;
-			stride = <(1080 * 4)>;
-			format = "a8r8g8b8";
-			clocks = <&gcc GCC_DISP_HF_AXI_CLK>,
-				 <&gcc GCC_DISP_SF_AXI_CLK>;
-		};
-	};
-
 	gpio_keys {
 		compatible = "gpio-keys";
 		pinctrl-names = "default";
@@ -130,11 +112,6 @@
 		cdsp_mem: memory@99100000 {
 			no-map;
 			reg = <0x0 0x99100000 0x0 0x1400000>;
-		};
-
-		cont_splash_mem: memory@9c000000 {
-			reg = <0x0 0x9c000000 0x0 0x2400000>;
-			no-map;
 		};
 
 		cdsp_sec_mem: memory@a4c00000 {
