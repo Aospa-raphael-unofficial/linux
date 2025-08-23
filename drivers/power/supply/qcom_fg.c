@@ -1222,7 +1222,7 @@ static int qcom_fg_probe(struct platform_device *pdev)
 	}
 
 	supply_config.drv_data = chip;
-	supply_config.of_node = pdev->dev.of_node;
+	supply_config.fwnode = dev_fwnode(&pdev->dev);
 
 	chip->batt_psy = devm_power_supply_register(chip->dev, &batt_psy_desc,
 						    &supply_config);
@@ -1327,12 +1327,12 @@ static int qcom_fg_probe(struct platform_device *pdev)
 	}
 
 	/* Optional: Get charger power supply for status checking */
-	chip->chg_psy = power_supply_get_by_phandle(chip->dev->of_node,
+	chip->chg_psy = devm_power_supply_get_by_reference(&pdev->dev,
 						    "power-supplies");
+	
 	if (IS_ERR(chip->chg_psy)) {
-		ret = PTR_ERR(chip->chg_psy);
-		dev_warn(chip->dev, "Failed to get charger supply: %d\n", ret);
-		chip->chg_psy = NULL;
+    		dev_warn(&pdev->dev, "No charger supply found\n");
+    		chip->chg_psy = NULL;
 	}
 
 	if (chip->chg_psy) {
