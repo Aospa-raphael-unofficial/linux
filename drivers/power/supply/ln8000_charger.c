@@ -1492,7 +1492,7 @@ static int ln8000_parse_dt(struct ln8000_info *info)
 static int ln8000_psy_register(struct ln8000_info *info)
 {
     info->psy_cfg.drv_data = info;
-    info->psy_cfg.of_node  = info->client->dev.of_node;
+    info->psy_cfg.fwnode = dev_fwnode(&info->client->dev);
     info->psy_desc.name 		= "ln8000-charger";
     info->psy_desc.type 		= POWER_SUPPLY_TYPE_MAINS;
     info->psy_desc.properties	= ln8000_charger_props;
@@ -1625,7 +1625,7 @@ static int ln8000_probe(struct i2c_client *client)
 
     determine_initial_status(info);
 
-    info->typec_psy = power_supply_get_by_phandle(info->dev->of_node,
+    info->typec_psy = devm_power_supply_get_by_reference(info->dev,
 							"usb-tcpm");
 	if (IS_ERR(info->typec_psy)) {
 		ret = PTR_ERR(info->typec_psy);
