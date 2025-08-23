@@ -631,7 +631,13 @@
 &pm8150b_fg {
 	status = "okay";
 	monitored-battery = <&battery>;
+	power-supplies = <&pm8150b_charger>;
 	//power-supplies = <&ln8000_charger>;
+};
+
+&pm8150b_charger {
+	status = "okay";
+	monitored-battery = <&battery>;
 };
 
 &pm8150l_flash {
