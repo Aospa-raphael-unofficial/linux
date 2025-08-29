@@ -5,6 +5,7 @@
 
 /dts-v1/;
 
+#include <dt-bindings/arm/qcom,ids.h>
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/input/gpio-keys.h>
@@ -38,7 +39,7 @@
 / {
 	model = "Xiaomi Mi 9T Pro";
 	compatible = "xiaomi,raphael", "qcom,sm8150";
-	qcom,msm-id = <339 0x20000>; /* SM8150 v2 */
+	qcom,msm-id = <QCOM_ID_SM8150 0x20000>; /* SM8150 v2 */
 	qcom,board-id = <40 0>;
 
 	aliases {
