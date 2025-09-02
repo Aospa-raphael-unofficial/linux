@@ -55,7 +55,7 @@
 
 		framebuffer: framebuffer@9c000000 {
 			compatible = "simple-framebuffer";
-			reg = <0 0x9c000000 0 0x2400000>;
+			reg = <0 0x9c000000 0 (1080 * 2400 * 4)>;
 			status = "disabled";
 			width = <1080>;
 			height = <2340>;
@@ -162,7 +162,14 @@
 			qcom,vmid = <15>;
 		};
 	};
-	
+
+	battery: battery {
+		compatible = "simple-battery";
+		charge-full-design-microamp-hours = <4000000>;
+		voltage-min-design-microvolt = <3400000>;
+		voltage-max-design-microvolt = <4400000>;
+	};
+
 	disp_vci_vreg: disp_vci_vreg {
 		compatible = "regulator-fixed";
 		regulator-name = "disp_vci_vreg";
@@ -179,7 +186,7 @@
 	};
 
 	/* S4 is modeled as a fixed regulator in vendor sources */
-	vreg_s4a_1p8: pm8150-s4-regulator {
+	vreg_s4a_1p8: pm8150-s4 {
 		compatible = "regulator-fixed";
 		regulator-name = "vreg_s4a_1p8";
 
@@ -555,13 +562,13 @@
 	vdda-supply = <&vreg_l3c_1p2>;
 	status = "okay";
 	panel@0 {
-		compatible = "ss,ea8076-global";
+		compatible = "samsung,ams639rq08";
 		reg = <0>;
 		status = "okay";
 		
 		vddio-supply = <&vreg_l14a_1p88>;
-		vcie-supply = <&disp_vci_vreg>;
-		vci-supply = <&vreg_l13a_2p7>;
+		vdd3p3-supply = <&vreg_l13a_2p7>;
+
 		reset-gpios = <&tlmm 6 GPIO_ACTIVE_LOW>;
 		
 		pinctrl-names = "panel_active", "panel_suspend";
@@ -644,6 +651,12 @@
 	};
 };
 
+&pm8150b_fg {
+	status = "okay";
+	monitored-battery = <&battery>;
+	//power-supplies = <&ln8000_charger>;
+};
+
 &pon_pwrkey {
 	status = "okay";
 };
@@ -674,7 +687,7 @@
 };
 
 &sound {
-	compatible = "qcom,sdm845-sndcard";
+	compatible = "qcom,sm8250-sndcard";
 	pinctrl-0 = <&quat_mi2s_active
 		&quat_mi2s_sd0_active>;
 	pinctrl-names = "default";
@@ -707,49 +720,14 @@
 	mm1-dai-link {
 		link-name = "MultiMedia1";
 		cpu {
-			sound-dai = <&q6asmdai  MSM_FRONTEND_DAI_MULTIMEDIA1>;
-		};
-	};
-	
-	mm2-dai-link {
-		link-name = "MultiMedia2";
-		cpu {
-			sound-dai = <&q6asmdai  MSM_FRONTEND_DAI_MULTIMEDIA2>;
-		};
-	};
-	
-	mm3-dai-link {
-		link-name = "MultiMedia3";
-		cpu {
-			sound-dai = <&q6asmdai  MSM_FRONTEND_DAI_MULTIMEDIA3>;
-		};
-	};
-	
-	mm4-dai-link {
-		link-name = "MultiMedia4";
-		cpu {
-			sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA4>;
-		};
-	};
-
-	mm5-dai-link {
-		link-name = "MultiMedia5";
-		cpu {
-			sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA5>;
-		};
-	};
-
-	mm6-dai-link {
-		link-name = "MultiMedia6";
-		cpu {
-			sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA6>;
+			sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA1>;
 		};
 	};
 
 	speaker_playback_dai {
 		link-name = "Primary Spkr Playback";
 		cpu {
-			sound-dai = <&q6afedai QUATERNARY_MI2S_RX>;
+			sound-dai = <&q6afedai PRIMARY_MI2S_RX>;
 		};
 
 		platform {
@@ -757,70 +735,9 @@
 		};
 
 		codec {
-			sound-dai =  <&tfa9874_codec 0>;
+			sound-dai = <&tfa9874_codec>;
 		};
 	};
-	
-	slim-dai-link {
-		link-name = "SLIM Playback 1";
-		cpu {
-			sound-dai = <&q6afedai SLIMBUS_6_RX>;
-		};
-
-		platform {
-			sound-dai = <&q6routing>;
-		};
-
-		codec {
-			sound-dai = <&wcd9340 6>;	/* AIF4_PB */
-		};
-	};
-
-	slimcap-dai-link {
-		link-name = "SLIM Capture 1";
-		cpu {
-			sound-dai = <&q6afedai SLIMBUS_5_TX>;
-		};
-
-		platform {
-			sound-dai = <&q6routing>;
-		};
-
-		codec {
-			sound-dai = <&wcd9340 1>;	/* AIF1_CAP*/
-		};
-	};
-
-	slimcap2-dai-link {
-		link-name = "SLIM Capture 2";
-		cpu {
-			sound-dai = <&q6afedai SLIMBUS_1_TX>;
-		};
-
-		platform {
-			sound-dai = <&q6routing>;
-		};
-
-		codec {
-			sound-dai = <&wcd9340 3>; 	/* AIF2_CAP*/
-		};
-	};
-
-	slimcap3-dai-link {
-		link-name = "SLIM Capture 3";
-		cpu {
-			sound-dai = <&q6afedai SLIMBUS_2_TX>;
-		};
-
-		platform {
-			sound-dai = <&q6routing>;
-		};
-
-		codec {
-			sound-dai = <&wcd9340 5>;	/* AIF3_CAP*/
-		};
-	};
-
 };
 
 &tlmm {
@@ -1002,47 +919,21 @@
 };
 
 &usb_1 {
+	qcom,select-utmi-as-pipe-clk;
 	status = "okay";
 };
 
 &usb_1_dwc3 {
-	snps,has-lpm-erratum;
-	snps,hird-threshold = /bits/ 8 <0x10>;
 	maximum-speed = "high-speed";
-	dr_mode = "host";
+	dr_mode = "peripheral";
+	status = "okay";
 };
 
 &usb_1_hsphy {
 	status = "okay";
-	vdda-pll-supply = <&vreg_l5a_0p875>;
-	vdda18-supply = <&vreg_l12a_1p8>;
-	vdda33-supply = <&vreg_l2a_3p1>;
-};
-
-&usb_1_qmpphy {
-	status = "okay";
-	vdda-phy-supply = <&vreg_l3c_1p2>;
-	vdda-pll-supply = <&vreg_l5a_0p875>;
-};
-
-&wcd9340 {
-	reset-gpios = <&tlmm 143 GPIO_ACTIVE_HIGH>;
-	vdd-buck-sido-supply = <&vreg_s4a_1p8>;
-	vdd-buck-supply = <&vreg_s4a_1p8>;
-	vdd-tx-supply = <&vreg_s4a_1p8>;
-	vdd-rx-supply = <&vreg_s4a_1p8>;
-	vdd-io-supply = <&vreg_s4a_1p8>;
-
-	qcom,micbias1-microvolt = <2700000>;
-	qcom,micbias2-microvolt = <1800000>;
-	qcom,micbias3-microvolt = <2700000>;
-	qcom,micbias4-microvolt = <2700000>;
-	
-	//qcom,hphl-jack-type-normally-open;
-	//qcom,ground-jack-type-normally-open;
-	//qcom,mbhc-buttons-vthreshold-microvolt = <75000 150000 237000 500000 500000 500000 500000 500000>;
-	qcom,mbhc-headset-vthreshold-microvolt = <1700000>;
-	qcom,mbhc-headphone-vthreshold-microvolt = <50000>;
+	vdd-supply = <&vdd_usb_hs_core>;
+	vdda-pll-supply = <&vdda_usb_hs_1p8>;
+	vdda-phy-dpdm-supply = <&vdda_usb_hs_3p1>;
 };
 
 &wifi {
