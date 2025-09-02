@@ -172,15 +172,15 @@ static int ams639rq08_unprepare(struct drm_panel *panel)
 }
 
 static const struct drm_display_mode ams639rq08_mode = {
-	.clock = (1080 + 64 + 20 + 64) * (2340 + 64 + 20 + 64) * 60 / 1000,
+	.clock = (1080 + 64 + 20 + 64) * (2340 + 64 + 27 + 64) * 60 / 1000,
 	.hdisplay = 1080,
 	.hsync_start = 1080 + 64,
 	.hsync_end = 1080 + 64 + 20,
 	.htotal = 1080 + 64 + 20 + 64,
 	.vdisplay = 2340,
 	.vsync_start = 2340 + 64,
-	.vsync_end = 2340 + 64 + 20,
-	.vtotal = 2340 + 64 + 20 + 64,
+	.vsync_end = 2340 + 64 + 27,
+	.vtotal = 2340 + 64 + 27 + 64,
 	.width_mm = 68,
 	.height_mm = 147,
 	.type = DRM_MODE_TYPE_DRIVER,
