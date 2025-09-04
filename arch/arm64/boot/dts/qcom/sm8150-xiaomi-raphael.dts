@@ -55,14 +55,13 @@
 
 		framebuffer: framebuffer@9c000000 {
 			compatible = "simple-framebuffer";
-			reg = <0 0x9c000000 0 (1080 * 2400 * 4)>;
-			status = "disabled";
+			reg = <0 0x9c000000 0 (1080 * 2340 * 4)>;
 			width = <1080>;
 			height = <2340>;
 			stride = <(1080 * 4)>;
 			format = "a8r8g8b8";
-			clocks = <&gcc GCC_DISP_HF_AXI_CLK>,
-				 <&gcc GCC_DISP_SF_AXI_CLK>;
+			display = <&panel>;
+			clocks = <&gcc GCC_DISP_HF_AXI_CLK>;
 		};
 	};
 
@@ -71,16 +70,28 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&vol_up_pin_a>;
 		
-		vol_up {
+		key-volume-up {
 			label = "volume_up";
 			gpios = <&pm8150_gpios 6 GPIO_ACTIVE_LOW>;
-			linux,input-type = <EV_KEY>;
 			linux,code = <KEY_VOLUMEUP>;
-			wakeup-source;
 			debounce-interval = <15>;
 		};
 	};
-	
+
+	vreg_ibb: regulator-ibb {
+		compatible = "regulator-fixed";
+		regulator-name = "ibb";
+		regulator-min-microvolt = <6000000>;
+		regulator-max-microvolt = <6000000>;
+	};
+
+	vreg_lab: regulator-lab {
+		compatible = "regulator-fixed";
+		regulator-name = "lab";
+		regulator-min-microvolt = <6000000>;
+		regulator-max-microvolt = <6000000>;
+	};
+
 	reserved-memory {
 		tz_mem: memory@86200000 {
 			no-map;
@@ -413,6 +424,7 @@
 		vdda_mipi_dsi0_1p2:
 		vdda_mipi_dsi1_1p2:
 		vdda_qlink_hv_ck:
+		vdda_ufs_1p2:
 		vreg_l3c_1p2: ldo3 {
 			regulator-min-microvolt = <1200000>;
 			regulator-max-microvolt = <1200000>;
@@ -561,13 +573,16 @@
 &mdss_dsi0 {
 	vdda-supply = <&vreg_l3c_1p2>;
 	status = "okay";
-	panel@0 {
+	panel:	panel@0 {
 		compatible = "samsung,ams639rq08";
 		reg = <0>;
 		status = "okay";
 		
 		vddio-supply = <&vreg_l14a_1p88>;
 		vdd3p3-supply = <&vreg_l13a_2p7>;
+
+	        vsn-supply = <&vreg_ibb>;
+	        vsp-supply = <&vreg_lab>;
 
 		reset-gpios = <&tlmm 6 GPIO_ACTIVE_LOW>;
 		
@@ -896,21 +911,21 @@
 &ufs_mem_hc {
 	status = "okay";
 
-	//reset-gpios = <&tlmm 178 GPIO_ACTIVE_LOW>;
+	reset-gpios = <&tlmm 178 GPIO_ACTIVE_LOW>;
 
-	//vcc-supply = <&vreg_l10a_2p5>;
+	vcc-supply = <&vreg_l10a_2p5>;
+	vcc-max-microamp = <750000>;
 	//vccq-supply = <&vreg_l9a_1p2>;
-	//vccq2-supply = <&vreg_s4a_1p8>;
-	//vcc-max-microamp = <750000>;
+	vccq2-supply = <&vreg_s4a_1p8>;
 	//vccq-max-microamp = <700000>;
-	//vccq2-max-microamp = <750000>;
+	vccq2-max-microamp = <750000>;
 };
 
 &ufs_mem_phy {
 	status = "okay";
 
-	//vdda-phy-supply = <&vdda_ufs_2ln_core_1>;
-	//vdda-pll-supply = <&vreg_l3c_1p2>;
+	vdda-phy-supply = <&vdda_ufs_2ln_core_1>;
+	vdda-pll-supply = <&vdda_ufs_1p2>;
 	//vddp-ref-clk-supply = <&vreg_l9a_1p2>;
 	//vdda-phy-max-microamp = <90200>;
 	//vdda-pll-max-microamp = <19000>;
@@ -925,7 +940,7 @@
 
 &usb_1_dwc3 {
 	maximum-speed = "high-speed";
-	dr_mode = "peripheral";
+	dr_mode = "host";
 	status = "okay";
 };
 
