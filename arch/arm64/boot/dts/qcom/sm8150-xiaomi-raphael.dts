@@ -595,7 +595,7 @@
 		reg = <0>;
 		status = "okay";
 		
-		vddio-supply = <&vreg_l14a_1p88>;
+		vddio-supply = <&disp_vci_vreg>;
 		vdd3p3-supply = <&vreg_l13a_2p7>;
 
 	        vsn-supply = <&vreg_ibb>;
