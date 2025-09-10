@@ -564,6 +564,12 @@
 	};
 };
 
+&ipa {
+	status = "okay";
+	memory-region = <&ipa_fw_mem>;
+	firmware-name = "qcom/sm8150/Xiaomi/raphael/ipa_fws.mbn";
+};
+
 &gpi_dma0 {
 	status = "okay";
 };
