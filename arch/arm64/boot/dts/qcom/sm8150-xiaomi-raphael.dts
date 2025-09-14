@@ -44,7 +44,23 @@
 	};
 
 	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
 		stdout-path = "serial0:115200n8";
+		bootargs = "earlycon console=ttyMSM0,115200";
+
+		framebuffer: framebuffer@9c000000 {
+			compatible = "simple-framebuffer";
+			reg = <0 0x9c000000 0 (1080 * 2340 * 4)>;
+			width = <1080>;
+			height = <2340>;
+			stride = <(1080 * 4)>;
+			format = "a8r8g8b8";
+			display = <&panel>;
+			clocks = <&gcc GCC_DISP_HF_AXI_CLK>;
+		};
 	};
 
 	disp_vci_vreg: disp_vci_vreg {
