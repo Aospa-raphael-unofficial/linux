@@ -47,6 +47,28 @@
 		stdout-path = "serial0:115200n8";
 	};
 
+	disp_vci_vreg: disp_vci_vreg {
+		compatible = "regulator-fixed";
+		regulator-name = "disp_vci_vreg";
+		enable-active-high;
+		regulator-boot-on;
+		gpio = <&tlmm 99 GPIO_ACTIVE_HIGH>;
+	};
+
+	vreg_ibb: regulator-ibb {
+		compatible = "regulator-fixed";
+		regulator-name = "ibb";
+		regulator-min-microvolt = <6000000>;
+		regulator-max-microvolt = <6000000>;
+	};
+
+	vreg_lab: regulator-lab {
+		compatible = "regulator-fixed";
+		regulator-name = "lab";
+		regulator-min-microvolt = <6000000>;
+		regulator-max-microvolt = <6000000>;
+	};
+
 	reserved-memory {
 		tz_mem: memory@86200000 {
 			no-map;
@@ -231,15 +253,15 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
-		vdd_usb_hs_core:
-		vdda_csi_0_0p9:
-		vdda_csi_1_0p9:
-		vdda_csi_2_0p9:
-		vdda_csi_3_0p9:
-		vdda_dsi_0_0p9:
-		vdda_dsi_1_0p9:
-		vdda_dsi_0_pll_0p9:
-		vdda_dsi_1_pll_0p9:
+                vdd_usb_hs_core:
+		vdda_mipi_csi_0_0p9:
+		vdda_mipi_csi_1_0p9:
+		vdda_mipi_csi_2_0p9:
+		vdda_mipi_csi_3_0p9:
+		vdda_mipi_dsi_0_0p9:
+		vdda_mipi_dsi_1_0p9:
+		vdda_mipi_dsi_0_pll_0p9:
+		vdda_mipi_dsi_1_pll_0p9:
 		vdda_pcie_1ln_core:
 		vdda_pcie_2ln_core:
 		vdda_pll_hv_cc_ebi01:
@@ -401,6 +423,7 @@
 		vdda_hv_ebi2:
 		vdda_hv_ebi3:
 		vdda_hv_refgen0:
+		vdda_mipi_dsi0_1p2:
 		vdda_qlink_hv_ck:
 		vreg_l3c_1p2: ldo3 {
 			regulator-min-microvolt = <1200000>;
@@ -467,6 +490,52 @@
 
 &gpu {
 	status = "okay";
+	
+	zap-shader {
+		memory-region = <&gpu_mem>;
+		firmware-name = "qcom/sm8150/Xiaomi/raphael/a640_zap.mbn";
+	};
+};
+
+&mdss_dsi0 {
+	vdda-supply = <&vdda_mipi_dsi0_1p2>;
+	status = "okay";
+	panel:	panel@0 {
+		compatible = "samsung,ams639rq08";
+		reg = <0>;
+		status = "okay";
+		
+		vddio-supply = <&vreg_l14a_1p8>;
+		vdd3p3-supply = <&disp_vci_vreg>;
+
+		vsn-supply = <&vreg_ibb>;
+		vsp-supply = <&vreg_lab>;
+
+		reset-gpios = <&tlmm 6 GPIO_ACTIVE_LOW>;
+		
+		pinctrl-names = "default", "sleep";
+		pinctrl-0 = <&panel_reset_pin &panel_te_pin>;
+
+		port {
+			panel_in: endpoint {
+				remote-endpoint = <&mdss_dsi0_out>;
+			};
+		};
+	};
+};
+
+&mdss_dsi0_out {
+	data-lanes = <0 1 2 3>;
+	remote-endpoint = <&panel_in>;
+};
+
+&mdss_dsi0_phy {
+	status = "okay";
+	vdds-supply = <&vreg_l5a_0p875>;
+};
+
+&mdss {
+	status = "okay";
 };
 
 &pm8150_gpios {
@@ -518,7 +587,24 @@
 };
 
 &tlmm {
+	/* gpios 0..3 are NFC spi, gpios 126..129 are FP spi */
 	gpio-reserved-ranges = <0 4>, <126 4>;
+
+	/* GPIOs for display panel */
+	panel_reset_pin: panel-reset-state {
+		pins = "gpio6";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+		output-low;
+		power-source = <1>;
+	};
+	panel_te_pin: panel-te-state {
+		pins = "gpio8";
+		function = "mdp_vsync";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
 };
 
 &uart2 {
