@@ -205,6 +205,28 @@
 
 		vin-supply = <&vph_pwr>;
 	};
+
+	vreg_tp_3p3: regulator-tp-3p3 {
+		compatible = "regulator-fixed";
+		regulator-name = "vreg_tp_3p3";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&tlmm 98 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-boot-on;
+		startup-delay-us = <5000>;
+	};
+	
+	vreg_tp_1p8: regulator-tp-1p8 {
+		compatible = "regulator-fixed";
+		regulator-name = "vreg_tp_1p8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		gpio = <&tlmm 100 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-boot-on;
+		startup-delay-us = <5000>;
+	};
 };
 
 &apps_rsc {
@@ -271,7 +293,7 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
-                vdd_usb_hs_core:
+		vdd_usb_hs_core:
 		vdda_mipi_csi_0_0p9:
 		vdda_mipi_csi_1_0p9:
 		vdda_mipi_csi_2_0p9:
@@ -502,6 +524,10 @@
 	};
 };
 
+&gpi_dma2 {
+	status = "okay";
+};
+
 &gmu {
 	status = "okay";
 };
@@ -512,6 +538,21 @@
 	zap-shader {
 		memory-region = <&gpu_mem>;
 		firmware-name = "qcom/sm8150/Xiaomi/raphael/a640_zap.mbn";
+	};
+};
+
+&i2c19 {
+	clock-frequency = <100000>;
+	status = "okay";
+	goodix@5d {
+		compatible = "goodix,gt9886";
+		reg = <0x5d>;
+		avdd-supply = <&vreg_tp_3p3>;
+		vddio-supply = <&vreg_tp_1p8>;
+		interrupts-extended = <&tlmm 122 IRQ_TYPE_LEVEL_LOW>;
+		reset-gpios = <&tlmm 54 GPIO_ACTIVE_LOW>;
+		touchscreen-size-x = <1080>;
+		touchscreen-size-y = <2340>;
 	};
 };
 
@@ -581,6 +622,10 @@
 };
 
 &qupv3_id_1 {
+	status = "okay";
+};
+
+&qupv3_id_2 {
 	status = "okay";
 };
 
@@ -668,6 +713,32 @@
 			pins = "gpio46";
 			bias-pull-up;
 		};
+	};
+
+	/* GPIOs for touch panel */
+	tp_active: tp_active {
+			pins = "gpio122", "gpio54";
+			function = "gpio";
+			drive-strength = <16>;
+			bias-pull-up;
+	};
+	
+	tp_int_suspend: tp_int_suspend {
+			pins = "gpio122";
+			function = "gpio";
+			drive-strength = <16>;
+			input-enable;
+			slew-rate = <0>;
+			bias-pull-up;
+	};
+
+	tp_reset_suspend: tp_reset_suspend {
+			pins = "gpio54";
+			function = "gpio";
+			drive-strength = <16>;
+			slew-rate = <1>;
+			bias-disable;
+			output-high;
 	};
 };
 
