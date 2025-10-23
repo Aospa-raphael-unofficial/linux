@@ -992,6 +992,67 @@
 			bias-pull-down;
 		};
 	};
+
+	hall {
+                hall_intr3: hall_intr3 {
+                    mux {
+                        pins = "gpio101";
+                        function = "gpio";
+                    };
+
+                    config {
+                        pins = "gpio101";
+                        drive-strength = <2>;
+                        bias-pull-up;
+                        input-enable;
+                    };
+                };
+
+                hall_intr4: hall_intr4 {
+                    mux {
+                        pins = "gpio134";
+                        function = "gpio";
+                    };
+
+                    config {
+                        pins = "gpio134";
+                        drive-strength = <2>;
+                        bias-pull-up;
+                        input-enable;
+                    };
+                };
+        };
+
+        idt {
+                idt_int: idt_int {
+                    mux {
+                        pins = "gpio95";
+                        function = "gpio";
+                    };
+
+                    config {
+                        pins = "gpio95";
+                        drive-strength = <2>;
+                        bias-pull-up;
+                        input-enable;
+                    };
+                };
+
+                txon_enable: txon_enable {
+                    mux {
+                        pins = "gpio3";
+                        function = "gpio";
+                    };
+
+                    config {
+                        pins = "gpio3";
+                        drive-strength = <16>;
+                        bias-disable;
+                        bias-pull-down;
+                        output-low;
+                    };
+                };
+        };
 };
 
 &uart2 {
@@ -1131,4 +1192,19 @@
        rtc_offset: rtc-offset@bc {
                reg = <0xbc 0x4>;
        };
+};
+
+&i2c17 {
+	status = "okay";
+
+        idtp9418: idtp9418@3b {
+                compatible = "idt,p9418";
+                reg = <0x3b>;
+                status = "okay";
+                irq-gpios = <&tlmm 95 GPIO_ACTIVE_HIGH>;
+		pen-det-active-high-gpios = <&tlmm 101 GPIO_ACTIVE_HIGH>;
+		pen-det-active-low-gpios =<&tlmm 134 GPIO_ACTIVE_HIGH>;
+                enable-gpios = <&tlmm 3 GPIO_ACTIVE_HIGH>;
+                boost-enable-gpios = <&tlmm 47 GPIO_ACTIVE_HIGH>;
+        };
 };
