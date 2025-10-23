@@ -1194,4 +1194,14 @@ config MACSMC_POWER
 
 	  Say Y or M here if you have an Apple Silicon based Mac.
 
+config CHARGER_IDTP9418
+	tristate "idtp9418 Wireless Power Charger driver"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  Say Y here to enable the idtp9418 Wireless Power Charger driver.
+	  It enables the control and monitoring of the reverse wireless power
+	  charging in used in some Xiaomi tablet devices for recharging
+	  the stylus.
+
 endif # POWER_SUPPLY
