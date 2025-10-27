@@ -7,6 +7,7 @@
 /dts-v1/;
 
 #include <dt-bindings/arm/qcom,ids.h>
+#include <dt-bindings/firmware/qcom,scm.h>
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/leds/common.h>
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
@@ -153,9 +154,7 @@
 			reg = <0x0 0xa1600000 0x0 0x800000>;
 			console-size = <0x400000>;
 			pmsg-size = <0x200000>;
-			record-size = <0>;
-			ftrace-size = <0>;
-			ecc-size = <0>;
+			ecc-size = <8>;
 			no-map;
 		};
 
@@ -163,15 +162,15 @@
 			compatible = "qcom,rmtfs-mem";
 			reg = <0 0xfe101000 0 0x300000>;
 			qcom,client-id = <1>;
-			qcom,vmid = <15>;
+			qcom,vmid = <QCOM_SCM_VMID_MSS_MSA>;
 			no-map;
 		};
 	};
 
 	gpio-keys {
 		compatible = "gpio-keys";
-		pinctrl-names = "default";
 		pinctrl-0 = <&vol_up_n>;
+		pinctrl-names = "default";
 
 		key-vol-up {
 			label = "Volume Up";
@@ -304,10 +303,6 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
-		/*
-		 * PM8150 LDO8 (L8A) — supplies vreg_l8a_0p75
-		 * Device spec: nominal 0.752 V, active min 0.752 V, active max 0.904 V, IRATED = 300 mA
-		 */
 		vreg_l8a_0p75: ldo8 {
 			regulator-min-microvolt = <752000>;
 			regulator-max-microvolt = <816000>;
@@ -506,12 +501,13 @@
 };
 
 &gpu {
-	zap-shader {
-		memory-region = <&gpu_mem>;
-		firmware-name = "qcom/sm8150/xiaomi/raphael/a640_zap.mbn";
-	};
 
 	status = "okay";
+
+	zap-shader {
+		memory-region = <&gpu_mem>;
+		firmware-name = "qcom/sm8150/Xiaomi/raphael/a640_zap.mbn";
+	};
 };
 
 &i2c19 {
@@ -526,6 +522,7 @@
 	vdda-supply = <&vdda_mipi_dsi0_1p2>;
 
 	status = "okay";
+
 	panel: panel@0 {
 		compatible = "samsung,ams639rq08";
 		reg = <0>;
@@ -537,10 +534,12 @@
 
 		reset-gpios = <&tlmm 6 GPIO_ACTIVE_LOW>;
 
+		pinctrl-0 = <&panel_reset_active &panel_te_pin>;
+		pinctrl-1 = <&panel_reset_suspend &panel_te_pin>; 
 		pinctrl-names = "default", "sleep";
-		pinctrl-0 = <&panel_reset_pin &panel_te_pin>;
 
 		status = "okay";
+
 		port {
 			panel_in: endpoint {
 				remote-endpoint = <&mdss_dsi0_out>;
@@ -574,6 +573,7 @@
 	vdd-pdphy-supply = <&vdda_usb_hs_3p1>;
 
 	status = "okay";
+
 	connector {
 		compatible = "usb-c-connector";
 		power-role = "source";
@@ -608,6 +608,7 @@
 &pm8150l_flash {
 
 	status = "okay";
+
 	led-1 {
 		function = LED_FUNCTION_FLASH;
 		color = <LED_COLOR_ID_WHITE>;
@@ -630,26 +631,21 @@
 &pm8150l_lpg {
 
 	status = "okay";
+
 	led@1 {
 		reg = <1>;
-		color = <LED_COLOR_ID_WHITE>;
+		color = <LED_COLOR_ID_RED>;
 		function = LED_FUNCTION_STATUS;
-
-		status = "disabled";
+		function-enumerator = <0>;
+		label = "popup-camera-left";
 	};
 
 	led@2 {
 		reg = <2>;
 		color = <LED_COLOR_ID_RED>;
 		function = LED_FUNCTION_STATUS;
-		function-enumerator = <0>;
-	};
-
-	led@3 {
-		reg = <3>;
-		color = <LED_COLOR_ID_RED>;
-		function = LED_FUNCTION_STATUS;
 		function-enumerator = <1>;
+		label = "popup-camera-right";
 	};
 };
 
@@ -683,25 +679,25 @@
 };
 
 &remoteproc_adsp {
-	firmware-name = "qcom/sm8150/xiaomi/raphael/adsp.mbn";
+	firmware-name = "qcom/sm8150/Xiaomi/raphael/adsp.mbn";
 
 	status = "okay";
 };
 
 &remoteproc_cdsp {
-	firmware-name = "qcom/sm8150/xiaomi/raphael/cdsp.mbn";
+	firmware-name = "qcom/sm8150/Xiaomi/raphael/cdsp.mbn";
 
 	status = "okay";
 };
 
 &remoteproc_mpss {
-	firmware-name = "qcom/sm8150/xiaomi/raphael/modem.mbn";
+	firmware-name = "qcom/sm8150/Xiaomi/raphael/modem.mbn";
 
 	status = "okay";
 };
 
 &remoteproc_slpi {
-	firmware-name = "qcom/sm8150/xiaomi/raphael/slpi.mbn";
+	firmware-name = "qcom/sm8150/Xiaomi/raphael/slpi.mbn";
 
 	status = "disabled";
 };
@@ -888,12 +884,19 @@
 	gpio-reserved-ranges = <0 4>, <126 4>;
 
 	/* Display panel pins */
-	panel_reset_pin: panel-reset-state {
+	panel_reset_active: panel-reset-active-state {
+		pins = "gpio6";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-disable;
+		power-source = <1>;
+	};
+
+	panel_reset_suspend: panel-reset-suspend-state {
 		pins = "gpio6";
 		function = "gpio";
 		drive-strength = <2>;
-		bias-disable;
-		output-low;
+		bias-pull-down;
 		power-source = <1>;
 	};
 
@@ -927,7 +930,6 @@
 		drive-strength = <16>;
 		slew-rate = <1>;
 		bias-disable;
-		output-high;
 	};
 };
 
