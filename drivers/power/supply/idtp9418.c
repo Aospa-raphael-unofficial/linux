@@ -544,11 +544,9 @@ static void idtp9418_irq_work(struct work_struct *work)
 	u8 int_buf[4] = {0};
 	u32 int_val = 0;
 	int rc = 0;
-	int irq_level;
 
 	if (gpiod_get_value(di->gpios.idt_irq))
 	{
-		dev_info(di->dev, "irq is high level, ignore%d\n", irq_level);
 		pm_relax(di->dev);
 		return;
 	}
