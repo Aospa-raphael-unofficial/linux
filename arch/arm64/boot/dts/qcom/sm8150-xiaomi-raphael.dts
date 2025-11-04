@@ -970,8 +970,6 @@
 	/* Remove USB3 phy */
 	phys = <&usb_1_hsphy>;
 	phy-names = "usb2-phy";
-
-	usb-role-switch;
 };
 
 &usb_1_dwc3_hs {
