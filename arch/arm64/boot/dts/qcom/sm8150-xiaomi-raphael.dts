@@ -100,6 +100,27 @@
 		regulator-max-microvolt = <6000000>;
 	};
 
+        vph_pwr: regulator-vph-pwr {
+                compatible = "regulator-fixed";
+                regulator-name = "vph_pwr";
+                regulator-min-microvolt = <3700000>;
+                regulator-max-microvolt = <3700000>;
+        };
+
+	/*
+	 * Apparently RPMh does not provide support for PM8150 S4 because it
+	 * is always-on; model it as a fixed regulator.
+	 */
+	vreg_s4a_1p8: regulator-pm8150-s4 {
+		compatible = "regulator-fixed";
+		regulator-name = "vreg_s4a_1p8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-always-on;
+		regulator-boot-on;
+		vin-supply = <&vph_pwr>;
+	};
+
 	reserved-memory {
 		tz_mem: memory@86200000 {
 			reg = <0x0 0x86200000 0x0 0x5500000>;
@@ -178,27 +199,6 @@
 			no-map;
 		};
 	};
-
-	/*
-	 * Apparently RPMh does not provide support for PM8150 S4 because it
-	 * is always-on; model it as a fixed regulator.
-	 */
-	vreg_s4a_1p8: regulator-pm8150-s4 {
-		compatible = "regulator-fixed";
-		regulator-name = "vreg_s4a_1p8";
-		regulator-min-microvolt = <1800000>;
-		regulator-max-microvolt = <1800000>;
-		regulator-always-on;
-		regulator-boot-on;
-		vin-supply = <&vph_pwr>;
-	};
-
-	vph_pwr: regulator-vph-pwr {
-		compatible = "regulator-fixed";
-		regulator-name = "vph_pwr";
-		regulator-min-microvolt = <3700000>;
-		regulator-max-microvolt = <3700000>;
- 	};
 };
 
 &apps_rsc {
@@ -252,17 +252,6 @@
 		vreg_l3a_0p8: ldo3 {
 			regulator-min-microvolt = <480000>;
 			regulator-max-microvolt = <932000>;
-			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
-		};
-
-		/*
-		 * L4A supplies VDD_LPI_MX_* (VDD_LPI_MX_A_1). Board label: vreg_l4a_0p75.
-		 * PM8150 device spec: L4A nominal = 0.816 V, active min = 0.752 V, active max = 0.904 V,
-		 * IRATED = 300 mA. If the board programs L4A to ~0.752 V, keep min=752000 and max=816000.
-		 */
-		vreg_l4a_0p75: ldo4 {
-			regulator-min-microvolt = <752000>;
-			regulator-max-microvolt = <816000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
@@ -571,7 +560,7 @@
 
 	connector {
 		compatible = "usb-c-connector";
-		power-role = "source";
+		power-role = "dual";
 		data-role = "dual";
 		self-powered;
 
