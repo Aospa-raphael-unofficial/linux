@@ -562,12 +562,14 @@
 	};
 };
 
-&ipa {
-	status = "okay";
-	qcom,gsi-loader = "self";
-	memory-region = <&ipa_fw_mem>;
-	firmware-name = "qcom/sm8150/Xiaomi/raphael/ipa_fws.mbn";
-};
+/* 
+ * &ipa {
+ *	status = "okay";
+ *	qcom,gsi-loader = "self";
+ *	memory-region = <&ipa_fw_mem>;
+ *	firmware-name = "qcom/sm8150/Xiaomi/raphael/ipa_fws.mbn";
+ *};
+ */
 
 &mdss_dsi0 {
 	vdda-supply = <&vdda_mipi_dsi0_1p2>;
