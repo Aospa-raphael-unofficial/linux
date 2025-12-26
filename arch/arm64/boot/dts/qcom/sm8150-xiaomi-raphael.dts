@@ -541,11 +541,10 @@
 
 &gpu {
 	status = "okay";
-	
-	zap-shader {
-		memory-region = <&gpu_mem>;
-		firmware-name = "qcom/sm8150/Xiaomi/raphael/a640_zap.mbn";
-	};
+};
+
+&gpu_zap_shader {
+	firmware-name = "qcom/sm8150/a640_zap.mbn";
 };
 
 &i2c19 {
