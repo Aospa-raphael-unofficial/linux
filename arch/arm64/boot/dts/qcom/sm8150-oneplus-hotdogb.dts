@@ -51,7 +51,7 @@
 			reg = <0x0 0x89d00000 0x0 0x1a00000>;
 			no-map;
 		};
-		ramoops: ramoops@0xA9800000 {
+		ramoops: ramoops@A9800000 {
 			compatible = "ramoops";
 			reg = <0 0xA9800000 0 0x400000>;
 			record-size = <0x40000>;
