@@ -84,9 +84,22 @@
 		};
 	};
 
-	disp_vci_vreg: disp_vci_vreg {
+        gpio-keys {
+                compatible = "gpio-keys";
+
+                pinctrl-names = "default";
+                pinctrl-0 = <&vol_up_n>;
+
+                key-vol-up {
+                        label = "Volume Up";
+                        linux,code = <KEY_VOLUMEUP>;
+                        gpios = <&pm8150_gpios 6 GPIO_ACTIVE_LOW>;
+                };
+        };
+
+	vreg_disp_vci: regulator-disp-vci {
 		compatible = "regulator-fixed";
-		regulator-name = "disp_vci_vreg";
+		regulator-name = "vreg_disp_vci";
 		enable-active-high;
 		regulator-boot-on;
 		gpio = <&tlmm 99 GPIO_ACTIVE_HIGH>;
@@ -188,31 +201,11 @@
 		};
 	};
 
-	gpio-keys {
-		compatible = "gpio-keys";
-
-		pinctrl-names = "default";
-		pinctrl-0 = <&vol_up_n>;
-
-		key-vol-up {
-			label = "Volume Up";
-			linux,code = <KEY_VOLUMEUP>;
-			gpios = <&pm8150_gpios 6 GPIO_ACTIVE_LOW>;
-		};
-	};
-
-	vph_pwr: vph-pwr-regulator {
-		compatible = "regulator-fixed";
-		regulator-name = "vph_pwr";
-		regulator-min-microvolt = <3700000>;
-		regulator-max-microvolt = <3700000>;
-	};
-
 	/*
 	 * Apparently RPMh does not provide support for PM8150 S4 because it
 	 * is always-on; model it as a fixed regulator.
 	 */
-	vreg_s4a_1p8: pm8150-s4 {
+	vreg_s4a_1p8: regulator-pm8150-s4 {
 		compatible = "regulator-fixed";
 		regulator-name = "vreg_s4a_1p8";
 
@@ -224,6 +217,13 @@
 
 		vin-supply = <&vph_pwr>;
 	};
+
+        vph_pwr: vph-pwr-regulator {
+                compatible = "regulator-fixed";
+                regulator-name = "vph_pwr";
+                regulator-min-microvolt = <3700000>;
+                regulator-max-microvolt = <3700000>;
+        };
 
 	vreg_tp_3p3: regulator-tp-3p3 {
 		compatible = "regulator-fixed";
@@ -302,16 +302,6 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
-		/* L4A supplies VDD_LPI_MX_* (VDD_LPI_MX_A_1). Board label: vreg_l4a_0p75.
-		* PM8150 device spec: L4A nominal = 0.816 V, active min = 0.752 V, active max = 0.904 V,
-		* IRATED = 300 mA. If the board programs L4A to ~0.752 V, keep min=752000 and max=816000.
-		*/
-		vreg_l4a_0p75: ldo4 {
-			regulator-min-microvolt = <752000>;
-			regulator-max-microvolt = <816000>;
-			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
-		};
-
 		vdd_usb_hs_core:
 		vdda_mipi_csi_0_0p9:
 		vdda_mipi_csi_1_0p9:
@@ -350,14 +340,6 @@
 			regulator-min-microvolt = <1800000>;
 			regulator-max-microvolt = <1800000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
-		};
-
-		/* PM8150 LDO8 (L8A) — supplies vreg_l8a_0p75
-		* Device spec: nominal 0.752 V, active min 0.752 V, active max 0.904 V, IRATED = 300 mA
-		*/
-		vreg_l8a_0p75: ldo8 {
-                        regulator-min-microvolt = <752000>;                              
-                        regulator-max-microvolt = <816000>;
 		};
 
 		vddpx_10:
@@ -591,7 +573,7 @@
 		status = "okay";
 		
 		vddio-supply = <&vreg_l14a_1p8>;
-		vdd3p3-supply = <&disp_vci_vreg>;
+		vdd3p3-supply = <&vreg_disp_vci>;
 
 		vsn-supply = <&vreg_ibb>;
 		vsp-supply = <&vreg_lab>;
@@ -653,12 +635,17 @@
 	connector {
 		compatible = "usb-c-connector";
 
-		power-role = "source";
+		power-role = "dual";
 		data-role = "dual";
 		self-powered;
 
 		source-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_DUAL_ROLE |
 			       PDO_FIXED_USB_COMM | PDO_FIXED_DATA_SWAP)>;
+
+		sink-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_DUAL_ROLE |
+			       PDO_FIXED_USB_COMM | PDO_FIXED_DATA_SWAP)>;
+
+		op-sink-microwatt = <10000000>;
 
 		ports {
 			#address-cells = <1>;
@@ -783,7 +770,7 @@
 };
 
 &remoteproc_slpi {
-	status = "disabled";
+	status = "okay";
 	firmware-name = "qcom/sm8150/Xiaomi/raphael/slpi.mbn";
 };
 
@@ -1083,7 +1070,6 @@
 };
 
 &usb_1_dwc3 {
-	dr_mode = "otg";
 	usb-role-switch;
 	maximum-speed = "high-speed";
 	/* Remove USB3 phy */
