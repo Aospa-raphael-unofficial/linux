@@ -33,6 +33,7 @@
 
 #include <linux/init.h>
 #include <linux/kernel.h>
+#include <linux/hex.h>
 #include <linux/module.h>
 #include <linux/string.h>
 #include <linux/ctype.h>
