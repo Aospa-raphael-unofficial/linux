@@ -1116,7 +1116,7 @@
 
 	status = "okay";
 
-	bluetooth {
+	bluetooth: bluetooth {
 		compatible = "qcom,wcn3998-bt";
 
 		vddio-supply = <&vreg_pmu_io>;
