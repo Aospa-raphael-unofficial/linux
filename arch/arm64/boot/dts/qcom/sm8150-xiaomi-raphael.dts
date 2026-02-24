@@ -43,7 +43,7 @@
 	aliases {
 		bluetooth0 = &bluetooth;
 		serial0 = &uart2;
-		hsuart0 = &uart13;
+		serial1 = &uart13;
 		wifi0 = &wifi;
 	};
 
@@ -245,6 +245,43 @@
 		enable-active-high;
 		regulator-boot-on;
 		startup-delay-us = <5000>;
+	};
+
+	wcn3998-pmu {
+		compatible = "qcom,wcn3998-pmu";
+
+		pinctrl-0 = <&sw_ctrl_default>;
+		pinctrl-names = "default";
+
+		vddio-supply = <&vreg_s4a_1p8>;
+		vddxo-supply = <&vreg_l7a_1p8>;
+		vddrf-supply = <&vreg_l2c_1p3>;
+		vddch0-supply = <&vreg_l11c_3p3>;
+		vddch1-supply = <&vreg_l10c_3p3>;
+
+		swctrl-gpios = <&tlmm 50 GPIO_ACTIVE_HIGH>;
+
+		regulators {
+			vreg_pmu_io: ldo0 {
+				regulator-name = "vreg_pmu_io";
+			};
+
+			vreg_pmu_xo: ldo1 {
+				regulator-name = "vreg_pmu_xo";
+			};
+
+			vreg_pmu_rf: ldo2 {
+				regulator-name = "vreg_pmu_rf";
+			};
+
+			vreg_pmu_ch0: ldo3 {
+				regulator-name = "vreg_pmu_ch0";
+			};
+
+			vreg_pmu_ch1: ldo4 {
+				regulator-name = "vreg_pmu_ch1";
+			};
+		};
 	};
 };
 
@@ -972,28 +1009,70 @@
         bias-pull-down;
     };
 
-    /* QUP UART pins */
-    qup_uart13_sleep: qup-uart13-sleep {
-        pinmux {
-            pins = "gpio43", "gpio44", "gpio45", "gpio46";
-            function = "gpio";
-        };
-        pinconf-cts {
-            pins = "gpio43";
-            bias-pull-down;
-        };
-        pinconf-rts {
-            pins = "gpio44";
-            bias-pull-down;
-        };
-        pinconf-tx {
-            pins = "gpio45";
-            bias-pull-up;
-        };
-        pinconf-rx {
-            pins = "gpio46";
-            bias-pull-up;
-        };
+    qup_uart13_default: qup-uart13-default-state {
+	cts-pins {
+		pins = "gpio43";
+		function = "qup13";
+		drive-strength = <2>;
+		bias-bus-hold;
+	};
+
+	rts-pins {
+		pins = "gpio44";
+		function = "qup13";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	tx-pins {
+		pins = "gpio45";
+		function = "qup13";
+		drive-strength = <2>;
+		bias-disable;
+		};
+
+	rx-pins {
+		pins = "gpio46";
+		function = "qup13";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+    };
+
+    qup_uart13_sleep: qup-uart13-sleep-state {
+	cts-pins {
+		pins = "gpio43";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-bus-hold;
+	};
+
+	rts-pins {
+		pins = "gpio44";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+
+	tx-pins {
+		pins = "gpio45";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+
+	rx-pins {
+		pins = "gpio46";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+    };
+
+    sw_ctrl_default: sw-ctrl-default-state {
+	pins = "gpio50";
+	function = "gpio";
+	bias-pull-down;
     };
 
     /* Touch panel pins */
@@ -1028,19 +1107,22 @@
 };
 
 &uart13 {
+	/delete-property/ interrupts;
+	interrupts-extended = <&intc GIC_SPI 585 IRQ_TYPE_LEVEL_HIGH>,
+			      <&tlmm 46 IRQ_TYPE_EDGE_FALLING>;
+	pinctrl-0 = <&qup_uart13_default>;
+	pinctrl-1 = <&qup_uart13_sleep>;
+	pinctrl-names = "default", "sleep";
+
 	status = "okay";
 
-	pinctrl-names = "default", "sleep";
-	pinctrl-1 = <&qup_uart13_sleep>;
-
-	bluetooth: bluetooth {
+	bluetooth {
 		compatible = "qcom,wcn3998-bt";
-		vddio-supply = <&vreg_l7a_1p8>;
-		vddxo-supply = <&vreg_l7a_1p8>;
-		vddrf-supply = <&vreg_l2c_1p3>;
-		vddch0-supply = <&vreg_l11c_3p3>;
-		max-speed = <3200000>;
-		firmware-name = "crnv21.bin", "crbtfw21.tlv";
+
+		vddio-supply = <&vreg_pmu_io>;
+		vddxo-supply = <&vreg_pmu_xo>;
+		vddrf-supply = <&vreg_pmu_rf>;
+		vddch0-supply = <&vreg_pmu_ch0>;
 	};
 };
 
@@ -1089,12 +1171,13 @@
 };
 
 &wifi {
-	status = "okay";
-
 	vdd-0.8-cx-mx-supply = <&vdda_wcss_pll>;
-	vdd-1.8-xo-supply = <&vreg_l7a_1p8>;
-	vdd-1.3-rfa-supply = <&vdda_wcss_adcdac_1>;
-	vdd-3.3-ch0-supply = <&vreg_l11c_3p3>;
-	vdd-3.3-ch1-supply = <&vreg_l10c_3p3>;
+	vdd-1.8-xo-supply = <&vreg_pmu_xo>;
+	vdd-1.3-rfa-supply = <&vreg_pmu_rf>;
+	vdd-3.3-ch0-supply = <&vreg_pmu_ch0>;
+	vdd-3.3-ch1-supply = <&vreg_pmu_ch1>;
+
 	qcom,calibration-variant = "Xiaomi_raphael";
+
+	status = "okay";
 };
