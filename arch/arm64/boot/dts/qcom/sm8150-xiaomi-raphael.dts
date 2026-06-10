@@ -1179,5 +1179,8 @@
 
 	qcom,calibration-variant = "Xiaomi_raphael";
 
+	/* Fix MAC address - use device-specific address */
+	mac-address = [02 00 78 e0 04 ef];
+
 	status = "okay";
 };
