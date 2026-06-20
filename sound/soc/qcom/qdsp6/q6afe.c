@@ -35,6 +35,8 @@
 #define AFE_MODULE_TDM			0x0001028A
 
 #define AFE_PARAM_ID_CDC_SLIMBUS_SLAVE_CFG 0x00010235
+#define AFE_MODULE_CDC_DEV_CFG		0x00010234
+#define AFE_SVC_CMD_SET_PARAM_V2	0x000100fc
 #define AFE_PARAM_ID_USB_AUDIO_DEV_PARAMS    0x000102A5
 #define AFE_PARAM_ID_USB_AUDIO_DEV_LPCM_FMT 0x000102AA
 
@@ -984,6 +986,7 @@ static int q6afe_callback(struct apr_device *adev, const struct apr_resp_pkt *da
 		case AFE_PORT_CMD_DEVICE_STOP:
 		case AFE_PORT_CMD_DEVICE_START:
 		case AFE_SVC_CMD_SET_PARAM:
+		case AFE_SVC_CMD_SET_PARAM_V2:
 			port = q6afe_find_port(afe, hdr->token);
 			if (port) {
 				port->result = *res;
@@ -1214,6 +1217,92 @@ int q6afe_set_lpass_clock(struct device *dev, int clk_id, int attri,
 }
 EXPORT_SYMBOL_GPL(q6afe_set_lpass_clock);
 
+/**
+ * q6afe_send_cdc_slimbus_slave_cfg() - Send CDC SLIMBUS slave config
+ * @dev: pointer to AFE device (parent of codec device)
+ *
+ * Sends CDC SLIMBUS slave configuration to the DSP. Required
+ * by some ADSP firmware before SLIMBUS ports can be started.
+ *
+ * Return: 0 on success, negative errno otherwise.
+ */
+int q6afe_send_cdc_slimbus_slave_cfg(struct device *dev, u64 eaddr)
+{
+	struct q6afe *afe = dev_get_drvdata(dev->parent);
+	/* CDC SLIMBUS slave configuration data */
+	struct __packed cdc_cfg {
+		u32 minor_version;
+		u32 device_enum_addr_lsw;
+		u32 device_enum_addr_msw;
+		u16 tx_slave_port_offset;
+		u16 rx_slave_port_offset;
+	} cfg = {
+		.minor_version = 1,
+		.device_enum_addr_lsw = (u32)(eaddr & 0xFFFFFFFFULL),
+		.device_enum_addr_msw = (u32)(eaddr >> 32),
+		.tx_slave_port_offset = 0,
+		.rx_slave_port_offset = 16,
+	};
+
+	dev_dbg(dev, "CDC SLIMBUS slave cfg: eaddr=0x%016llx lsw=0x%08x msw=0x%08x\n",
+		 eaddr, cfg.device_enum_addr_lsw, cfg.device_enum_addr_msw);
+	/* param_hdr_v3 as expected by ADSP firmware (Android layout) */
+	struct __packed param_hdr_v3 {
+		u32 module_id;
+		u16 instance_id;
+		u16 reserved;
+		u32 param_id;
+		u32 param_size;
+	} phdr = {
+		.module_id = AFE_MODULE_CDC_DEV_CFG,
+		.instance_id = 0,
+		.reserved = 0,
+		.param_id = AFE_PARAM_ID_CDC_SLIMBUS_SLAVE_CFG,
+		.param_size = sizeof(cfg),
+	};
+	struct __packed set_param_pkt {
+		struct apr_hdr apr_hdr;
+		u32 data_payload_addr_lsw;
+		u32 data_payload_addr_msw;
+		u32 mem_map_handle;
+		u32 payload_size;
+		u8 payload[];
+	} *pkt;
+	int ret;
+
+	u32 packed_data_size = sizeof(phdr) + sizeof(cfg);
+	u32 pkt_size = APR_HDR_SIZE + 4 * sizeof(u32) + packed_data_size;
+
+	void *p __free(kfree) = kzalloc(pkt_size, GFP_KERNEL);
+	if (!p)
+		return -ENOMEM;
+
+	pkt = p;
+	pkt->apr_hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
+					       APR_HDR_LEN(APR_HDR_SIZE),
+					       APR_PKT_VER);
+	pkt->apr_hdr.pkt_size = pkt_size;
+	pkt->apr_hdr.src_port = 0;
+	pkt->apr_hdr.dest_port = 0;
+	pkt->apr_hdr.token = AFE_CLK_TOKEN;
+	pkt->apr_hdr.opcode = AFE_SVC_CMD_SET_PARAM_V2;
+	/* V2 format: mem_mapping_hdr first, then payload_size */
+	pkt->data_payload_addr_lsw = 0;
+	pkt->data_payload_addr_msw = 0;
+	pkt->mem_map_handle = 0;
+	pkt->payload_size = packed_data_size;
+	memcpy(pkt->payload, &phdr, sizeof(phdr));
+	memcpy(pkt->payload + sizeof(phdr), &cfg, sizeof(cfg));
+
+	ret = afe_apr_send_pkt(afe, (struct apr_pkt *)pkt, NULL,
+			       AFE_SVC_CMD_SET_PARAM_V2);
+	if (ret)
+		dev_err(dev, "CDC SLIMBUS slave cfg failed: %d\n", ret);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(q6afe_send_cdc_slimbus_slave_cfg);
+
 int q6afe_port_set_sysclk(struct q6afe_port *port, int clk_id,
 			  int clk_src, int clk_root,
 			  unsigned int freq, int dir)
@@ -1328,6 +1417,14 @@ void q6afe_slim_port_prepare(struct q6afe_port *port,
 			     struct q6afe_slim_cfg *cfg)
 {
 	union afe_port_config *pcfg = &port->port_cfg;
+	int i;
+
+	dev_dbg(port->afe->dev, "q6afe_slim_port_prepare: port_id=0x%x rate=%u bw=%u ch=%u\n",
+		 port->id, cfg->sample_rate, cfg->bit_width, cfg->num_channels);
+	dev_dbg(port->afe->dev, "ch_mapping: [");
+	for (i = 0; i < cfg->num_channels; i++)
+		dev_dbg(port->afe->dev, "%u ", cfg->ch_mapping[i]);
+	dev_dbg(port->afe->dev, "]\n");
 
 	pcfg->slim_cfg.sb_cfg_minor_version = AFE_API_VERSION_SLIMBUS_CONFIG;
 	pcfg->slim_cfg.sample_rate = cfg->sample_rate;

@@ -55,6 +55,15 @@
 #define WCD934X_SLIM_IRQ_UNDERFLOW	BIT(1)
 #define WCD934X_SLIM_IRQ_PORT_CLOSED	BIT(2)
 
+#define SB_OF_UF_MAX_RETRY_CNT		5
+
+/* WCD934X slimbus slave port error status */
+enum {
+	SB_PORT_ERR_OF, /* SB port overflow */
+	SB_PORT_ERR_UF, /* SB port underflow */
+	SB_PORT_ERR_MAX,
+};
+
 #define WCD934X_MCLK_CLK_12P288MHZ	12288000
 #define WCD934X_MCLK_CLK_9P6MHZ		9600000
 
@@ -545,6 +554,7 @@ struct wcd934x_codec {
 	int dmic_sample_rate;
 	int comp_enabled[COMPANDER_MAX];
 	int sysclk_users;
+	int extclk_users;
 	struct mutex sysclk_mutex;
 	/* mbhc module */
 	struct wcd_mbhc *mbhc;
@@ -554,6 +564,8 @@ struct wcd934x_codec {
 	struct mutex micb_lock;
 	u32 micb_ref[WCD934X_MAX_MICBIAS];
 	u32 pullup_ref[WCD934X_MAX_MICBIAS];
+	/* slimbus port overflow/underflow counts */
+	unsigned short slim_tx_of_uf_cnt[WCD934X_RX_MAX][SB_PORT_ERR_MAX];
 };
 
 #define to_wcd934x_codec(_hw) container_of(_hw, struct wcd934x_codec, hw)
@@ -1351,16 +1363,33 @@ static int __wcd934x_cdc_mclk_enable(struct wcd934x_codec *wcd, bool enable)
 	int ret = 0;
 
 	if (enable) {
+		if (wcd->extclk_users++ > 0)
+			return 0;
 		ret = clk_prepare_enable(wcd->extclk);
-
 		if (ret) {
+			wcd->extclk_users--;
 			dev_err(wcd->dev, "%s: ext clk enable failed\n",
 				__func__);
 			return ret;
 		}
 		ret = wcd934x_enable_ana_bias_and_sysclk(wcd);
+		if (ret) {
+			clk_disable_unprepare(wcd->extclk);
+			wcd->extclk_users--;
+		}
 	} else {
 		int val;
+
+		if (wcd->extclk_users <= 0) {
+			/* Reset to 0 to prevent permanent negative count */
+			wcd->extclk_users = 0;
+			dev_dbg(wcd->dev, "%s: extclk already disabled (reset)\n",
+				__func__);
+			return 0;
+		}
+
+		if (--wcd->extclk_users > 0)
+			return 0;
 
 		regmap_read(wcd->regmap, WCD934X_CDC_CLK_RST_CTRL_SWR_CONTROL,
 			    &val);
@@ -1700,6 +1729,20 @@ static int wcd934x_slim_set_hw_params(struct wcd934x_codec *wcd,
 	u16 payload = 0;
 	int ret, i;
 
+	/* Free any previously allocated stream runtime and channel list
+	 * to avoid resource leaks on repeated hw_params calls (e.g. when
+	 * the headphone is unplugged/replugged). Without this, each
+	 * hw_params would allocate a new sruntime and chs without freeing
+	 * the previous ones, leading to SLIM port resource accumulation
+	 * and eventual overflow errors.
+	 */
+	if (dai_data->sruntime) {
+		slim_stream_free(dai_data->sruntime);
+		dai_data->sruntime = NULL;
+	}
+	kfree(cfg->chs);
+	cfg->chs = NULL;
+
 	cfg->ch_count = 0;
 	cfg->direction = direction;
 	cfg->port_mask = 0;
@@ -1719,6 +1762,32 @@ static int wcd934x_slim_set_hw_params(struct wcd934x_codec *wcd,
 	list_for_each_entry(ch, slim_ch_list, list) {
 		cfg->chs[i++] = ch->ch_num;
 		if (direction == SNDRV_PCM_STREAM_PLAYBACK) {
+			/* Full port reset:
+			 * 1. Disable port
+			 * 2. Clear MULTI_CHNL register
+			 * 3. Clear any pending interrupt status
+			 * 4. Small delay for HW to settle
+			 * 5. Reconfigure MULTI_CHNL
+			 * 6. Re-enable port with water mark
+			 *
+			 * This is needed because once a SLIMbus RX port
+			 * gets into Port Closed error state (from a previous
+			 * overflow), simply writing PORT_CFG enable is not
+			 * enough to recover it. The MULTI_CHNL register
+			 * must also be cleared and re-set.
+			 */
+			regmap_write(wcd->if_regmap,
+				     WCD934X_SLIM_PGD_RX_PORT_CFG(ch->port),
+				     SLAVE_PORT_DISABLE);
+			regmap_write(wcd->if_regmap,
+				     WCD934X_SLIM_PGD_RX_PORT_MULTI_CHNL_0(ch->port),
+				     0);
+			/* Clear any pending interrupt on this port */
+			regmap_write(wcd->if_regmap,
+				     WCD934X_SLIM_PGD_PORT_INT_CLR_RX_0 +
+				     (ch->port / 8), BIT(ch->port % 8));
+			usleep_range(10000, 10100);
+
 			/* write to interface device */
 			ret = regmap_write(wcd->if_regmap,
 			   WCD934X_SLIM_PGD_RX_PORT_MULTI_CHNL_0(ch->port),
@@ -1734,6 +1803,18 @@ static int wcd934x_slim_set_hw_params(struct wcd934x_codec *wcd,
 			if (ret < 0)
 				goto err;
 		} else {
+			/* Full port reset for TX port */
+			regmap_write(wcd->if_regmap,
+				     WCD934X_SLIM_PGD_TX_PORT_CFG(ch->port),
+				     SLAVE_PORT_DISABLE);
+			regmap_write(wcd->if_regmap,
+				WCD934X_SLIM_PGD_TX_PORT_MULTI_CHNL_0(ch->port),
+				0);
+			regmap_write(wcd->if_regmap,
+				WCD934X_SLIM_PGD_TX_PORT_MULTI_CHNL_1(ch->port),
+				0);
+			usleep_range(10000, 10100);
+
 			ret = regmap_write(wcd->if_regmap,
 				WCD934X_SLIM_PGD_TX_PORT_MULTI_CHNL_0(ch->port),
 				payload & 0x00FF);
@@ -1758,6 +1839,12 @@ static int wcd934x_slim_set_hw_params(struct wcd934x_codec *wcd,
 	}
 
 	dai_data->sruntime = slim_stream_allocate(wcd->sdev, "WCD934x-SLIM");
+
+	/* Reset overflow/underflow counters for all configured ports */
+	list_for_each_entry(ch, slim_ch_list, list) {
+		wcd->slim_tx_of_uf_cnt[ch->port][SB_PORT_ERR_OF] = 0;
+		wcd->slim_tx_of_uf_cnt[ch->port][SB_PORT_ERR_UF] = 0;
+	}
 
 	return 0;
 
@@ -1864,7 +1951,18 @@ static int wcd934x_hw_free(struct snd_pcm_substream *substream,
 
 	dai_data = &wcd->dai[dai->id];
 
+	/* Free the channel list and stream runtime allocated in
+	 * wcd934x_slim_set_hw_params(). The trigger STOP path already
+	 * called slim_stream_disable/unprepare, so here we just need
+	 * to release the sruntime itself and the chs array to prevent
+	 * memory leaks across multiple plug/unplug cycles.
+	 */
+	if (dai_data->sruntime) {
+		slim_stream_free(dai_data->sruntime);
+		dai_data->sruntime = NULL;
+	}
 	kfree(dai_data->sconfig.chs);
+	dai_data->sconfig.chs = NULL;
 
 	return 0;
 }
@@ -1885,6 +1983,30 @@ static int wcd934x_trigger(struct snd_pcm_substream *substream, int cmd,
 	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
 		cfg = &dai_data->sconfig;
+		/*
+		 * Recovery for SLIM RX ports that may have been closed
+		 * by hardware due to overflow during prepare phase.
+		 */
+		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+			struct list_head *slim_ch_list = &dai_data->slim_ch_list;
+			struct wcd934x_slim_ch *ch;
+			u16 payload = 0;
+
+			list_for_each_entry(ch, slim_ch_list, list)
+				payload |= 1 << ch->shift;
+
+			list_for_each_entry(ch, slim_ch_list, list) {
+				regmap_write(wcd->if_regmap,
+					WCD934X_SLIM_PGD_RX_PORT_CFG(ch->port),
+					SLAVE_PORT_DISABLE);
+				regmap_write(wcd->if_regmap,
+					WCD934X_SLIM_PGD_RX_PORT_MULTI_CHNL_0(ch->port),
+					payload);
+				regmap_write(wcd->if_regmap,
+					WCD934X_SLIM_PGD_RX_PORT_CFG(ch->port),
+					WCD934X_SLIM_WATER_MARK_VAL);
+			}
+		}
 		slim_stream_prepare(dai_data->sruntime, cfg);
 		slim_stream_enable(dai_data->sruntime);
 		break;
@@ -2261,35 +2383,69 @@ static irqreturn_t wcd934x_slim_irq_handler(int irq, void *data)
 
 		if (val & WCD934X_SLIM_IRQ_OVERFLOW)
 			dev_err_ratelimited(wcd->dev,
-					    "overflow error on %s port %d, value %x\n",
+					    "overflow on %s port %d, value %x\n",
 					    (tx ? "TX" : "RX"), port_id, val);
 
 		if (val & WCD934X_SLIM_IRQ_UNDERFLOW)
 			dev_err_ratelimited(wcd->dev,
-					    "underflow error on %s port %d, value %x\n",
+					    "underflow on %s port %d, value %x\n",
 					    (tx ? "TX" : "RX"), port_id, val);
+
+		/*
+		 * Count overflow/underflow per port, only disable
+		 * interrupt after exceeding max retry count. This
+		 * matches Android kernel behavior and allows the
+		 * port to recover when the condition clears (e.g.
+		 * after DAPM powerup completes).
+		 */
+		if (val & WCD934X_SLIM_IRQ_OVERFLOW) {
+			wcd->slim_tx_of_uf_cnt[port_id][SB_PORT_ERR_OF]++;
+			dev_err_ratelimited(wcd->dev,
+				"%s port(%d) overflow cnt: %d\n",
+				(tx ? "TX" : "RX"), port_id,
+				wcd->slim_tx_of_uf_cnt[port_id][SB_PORT_ERR_OF]);
+		}
+		if (val & WCD934X_SLIM_IRQ_UNDERFLOW) {
+			wcd->slim_tx_of_uf_cnt[port_id][SB_PORT_ERR_UF]++;
+			dev_err_ratelimited(wcd->dev,
+				"%s port(%d) underflow cnt: %d\n",
+				(tx ? "TX" : "RX"), port_id,
+				wcd->slim_tx_of_uf_cnt[port_id][SB_PORT_ERR_UF]);
+		}
 
 		if ((val & WCD934X_SLIM_IRQ_OVERFLOW) ||
 		    (val & WCD934X_SLIM_IRQ_UNDERFLOW)) {
-			if (!tx)
-				reg = WCD934X_SLIM_PGD_PORT_INT_EN0 +
-					(port_id / 8);
-			else
+			if (!tx) {
+				if ((wcd->slim_tx_of_uf_cnt[port_id]
+				     [SB_PORT_ERR_OF] > SB_OF_UF_MAX_RETRY_CNT) ||
+				    (wcd->slim_tx_of_uf_cnt[port_id]
+				     [SB_PORT_ERR_UF] > SB_OF_UF_MAX_RETRY_CNT))
+					reg = WCD934X_SLIM_PGD_PORT_INT_EN0 +
+						(port_id / 8);
+				else
+					goto skip_port_disable;
+			} else if ((wcd->slim_tx_of_uf_cnt[port_id]
+				    [SB_PORT_ERR_OF] > SB_OF_UF_MAX_RETRY_CNT) ||
+				   (wcd->slim_tx_of_uf_cnt[port_id]
+				    [SB_PORT_ERR_UF] > SB_OF_UF_MAX_RETRY_CNT)) {
 				reg = WCD934X_SLIM_PGD_PORT_INT_TX_EN0 +
 					(port_id / 8);
-			regmap_read(
-				wcd->if_regmap, reg, &int_val);
-			if (int_val & (1 << (port_id % 8))) {
-				int_val = int_val ^ (1 << (port_id % 8));
-				regmap_write(wcd->if_regmap,
-					     reg, int_val);
+			} else {
+				goto skip_port_disable;
+			}
+			if (reg) {
+				regmap_read(wcd->if_regmap, reg, &int_val);
+				if (int_val & (1 << (port_id % 8))) {
+					int_val = int_val ^ (1 << (port_id % 8));
+					regmap_write(wcd->if_regmap, reg, int_val);
+				}
 			}
 		}
-
+skip_port_disable:
 		if (val & WCD934X_SLIM_IRQ_PORT_CLOSED)
 			dev_err_ratelimited(wcd->dev,
-					    "Port Closed %s port %d, value %x\n",
-					    (tx ? "TX" : "RX"), port_id, val);
+					    "Port Closed %s port %d\n",
+					    (tx ? "TX" : "RX"), port_id);
 
 		regmap_write(wcd->if_regmap,
 			     WCD934X_SLIM_PGD_PORT_INT_CLR_RX_0 + (j / 8),
@@ -2966,6 +3122,9 @@ static int wcd934x_mbhc_init(struct snd_soc_component *component)
 						     WCD934X_IRQ_HPH_PA_OCPL_FAULT);
 	intr_ids->hph_right_ocp = regmap_irq_get_virq(data->irq_data,
 						      WCD934X_IRQ_HPH_PA_OCPR_FAULT);
+
+	/* Update micbias voltage after device tree parsing */
+	wcd->mbhc_cfg.micb_mv = wcd->common.micb_mv[1];
 
 	wcd->mbhc = wcd_mbhc_init(component, &mbhc_cb, intr_ids, wcd_mbhc_fields, true);
 	if (IS_ERR(wcd->mbhc)) {
@@ -4117,6 +4276,17 @@ static int wcd934x_codec_enable_slim(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
+		/*
+		 * Wait for MBHC plug detection to complete before
+		 * enabling the audio path. MBHC and DAPM both access
+		 * shared HPH registers and concurrent access can
+		 * corrupt hardware state permanently.
+		 */
+		if (wcd->mbhc) {
+			int retries = 50;
+			while (!wcd_mbhc_is_detection_done(wcd->mbhc) && retries--)
+				msleep(100);
+		}
 		wcd934x_codec_enable_int_port(dai, comp);
 		break;
 	}
