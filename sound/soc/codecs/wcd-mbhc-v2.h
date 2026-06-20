@@ -283,6 +283,7 @@ struct wcd_mbhc *wcd_mbhc_init(struct snd_soc_component *component,
 		      bool impedance_det_en);
 int wcd_mbhc_get_impedance(struct wcd_mbhc *mbhc, uint32_t *zl,
 			   uint32_t *zr);
+bool wcd_mbhc_is_detection_done(struct wcd_mbhc *mbhc);
 void wcd_mbhc_deinit(struct wcd_mbhc *mbhc);
 int wcd_mbhc_event_notify(struct wcd_mbhc *mbhc, unsigned long event);
 
@@ -335,6 +336,12 @@ static inline int wcd_mbhc_get_impedance(struct wcd_mbhc *mbhc,
 	*zr = 0;
 	return -EINVAL;
 }
+
+static inline bool wcd_mbhc_is_detection_done(struct wcd_mbhc *mbhc)
+{
+	return true;
+}
+
 static inline void wcd_mbhc_deinit(struct wcd_mbhc *mbhc)
 {
 }
