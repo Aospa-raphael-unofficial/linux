@@ -77,6 +77,7 @@ struct wcd_mbhc {
 	enum wcd_mbhc_hph_type hph_type;
 	/* Holds mbhc detection method - ADC/Legacy */
 	int mbhc_detection_logic;
+	bool detection_done;
 };
 
 static inline int wcd_mbhc_write_field(const struct wcd_mbhc *mbhc,
@@ -305,6 +306,7 @@ static void wcd_mbhc_report_plug_removal(struct wcd_mbhc *mbhc,
 	wcd_micbias_disable(mbhc);
 	mbhc->hph_type = WCD_MBHC_HPH_NONE;
 	mbhc->zl = mbhc->zr = 0;
+	mbhc->detection_done = false;
 	snd_soc_jack_report(mbhc->jack, mbhc->hph_status, WCD_MBHC_JACK_MASK);
 	mbhc->current_plug = MBHC_PLUG_TYPE_NONE;
 	mbhc->force_linein = false;
@@ -332,6 +334,9 @@ static void wcd_mbhc_report_plug_insertion(struct wcd_mbhc *mbhc,
 					   enum snd_jack_types jack_type)
 {
 	bool is_pa_on;
+
+	mbhc->detection_done = false;
+
 	/*
 	 * Report removal of current jack type.
 	 * Headphone to headset shouldn't report headphone
@@ -356,7 +361,6 @@ static void wcd_mbhc_report_plug_insertion(struct wcd_mbhc *mbhc,
 	default:
 		break;
 	}
-
 
 	is_pa_on = wcd_mbhc_read_field(mbhc, WCD_MBHC_HPH_PA_EN);
 
@@ -400,6 +404,8 @@ static void wcd_mbhc_report_plug_insertion(struct wcd_mbhc *mbhc,
 
 	snd_soc_jack_report(mbhc->jack, (mbhc->hph_status | SND_JACK_MECHANICAL),
 			    WCD_MBHC_JACK_MASK);
+
+	mbhc->detection_done = true;
 }
 
 static void wcd_mbhc_report_plug(struct wcd_mbhc *mbhc, int insertion,
@@ -822,6 +828,28 @@ static int wcd_mbhc_initialise(struct wcd_mbhc *mbhc)
 	wcd_program_hs_vref(mbhc);
 
 	wcd_program_btn_threshold(mbhc, false);
+
+	/*
+	 * If no headset is plugged in at boot, configure electrical
+	 * insertion detection for hotplug support. This follows the
+	 * same sequence as wcd_mbhc_elec_hs_report_unplug():
+	 *   - Set SCHMT_ISRC = 3 (Schmitt trigger current source)
+	 *   - Set ELECT_DETECTION_TYPE = 1 (insertion mode)
+	 *   - Enable Elect Insert IRQ
+	 * Without SCHMT_ISRC = 3, the electrical detection circuit
+	 * has no current source and cannot detect plug insertion.
+	 */
+	if (mbhc->current_plug == MBHC_PLUG_TYPE_NONE) {
+		disable_irq_nosync(mbhc->intr_ids->mbhc_hs_rem_intr);
+		wcd_mbhc_write_field(mbhc, WCD_MBHC_FSM_EN, 0);
+		wcd_mbhc_write_field(mbhc, WCD_MBHC_ELECT_SCHMT_ISRC, 3);
+		wcd_mbhc_write_field(mbhc, WCD_MBHC_ELECT_DETECTION_TYPE, 1);
+		enable_irq(mbhc->intr_ids->mbhc_hs_ins_intr);
+	} else {
+		dev_dbg(mbhc->component->dev,
+			"headset detected at boot (plug=%d)\n",
+			mbhc->current_plug);
+	}
 
 	mutex_unlock(&mbhc->lock);
 
@@ -1315,6 +1343,19 @@ exit:
 		enable_irq(mbhc->intr_ids->mbhc_hs_ins_intr);
 	}
 
+	/*
+	 * If no device detected after full detection sequence, re-enable
+	 * the Elect Insert IRQ so future hotplug events can be detected.
+	 * This handles the case where a spurious boot-time IRQ triggered
+	 * detection that found nothing.
+	 */
+	if (mbhc->current_plug == MBHC_PLUG_TYPE_NONE) {
+		wcd_mbhc_write_field(mbhc, WCD_MBHC_FSM_EN, 0);
+		wcd_mbhc_write_field(mbhc, WCD_MBHC_ELECT_SCHMT_ISRC, 3);
+		wcd_mbhc_write_field(mbhc, WCD_MBHC_ELECT_DETECTION_TYPE, 1);
+		enable_irq(mbhc->intr_ids->mbhc_hs_ins_intr);
+	}
+
 	if (mbhc->mbhc_cb->hph_pull_down_ctrl)
 		mbhc->mbhc_cb->hph_pull_down_ctrl(component, true);
 
@@ -1380,6 +1421,20 @@ static irqreturn_t wcd_mbhc_adc_hs_ins_irq(int irq, void *data)
 		return IRQ_HANDLED;
 	}
 
+	/*
+	 * Hotplug detection: when no headset is currently detected and
+	 * we receive an electrical insertion IRQ, start the full plug
+	 * type detection sequence (enable micbias, measure impedance,
+	 * determine plug type). This handles the case where the
+	 * mechanical switch doesn't trigger on insertion.
+	 */
+	if (mbhc->current_plug == MBHC_PLUG_TYPE_NONE) {
+		mutex_lock(&mbhc->lock);
+		wcd_mbhc_adc_detect_plug_type(mbhc);
+		mutex_unlock(&mbhc->lock);
+		return IRQ_HANDLED;
+	}
+
 	do {
 		clamp_state = wcd_mbhc_read_field(mbhc, WCD_MBHC_IN2P_CLAMP_STATE);
 		if (clamp_state)
@@ -1417,6 +1472,14 @@ int wcd_mbhc_get_impedance(struct wcd_mbhc *mbhc, uint32_t *zl,	uint32_t *zr)
 		return -EINVAL;
 }
 EXPORT_SYMBOL(wcd_mbhc_get_impedance);
+
+bool wcd_mbhc_is_detection_done(struct wcd_mbhc *mbhc)
+{
+	if (!mbhc)
+		return true;
+	return mbhc->detection_done;
+}
+EXPORT_SYMBOL(wcd_mbhc_is_detection_done);
 
 void wcd_mbhc_set_hph_type(struct wcd_mbhc *mbhc, int hph_type)
 {

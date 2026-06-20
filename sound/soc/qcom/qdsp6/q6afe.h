@@ -268,6 +268,7 @@ int q6afe_port_set_sysclk(struct q6afe_port *port, int clk_id,
 			  unsigned int freq, int dir);
 int q6afe_set_lpass_clock(struct device *dev, int clk_id, int attri,
 			  int clk_root, unsigned int freq);
+int q6afe_send_cdc_slimbus_slave_cfg(struct device *dev, u64 eaddr);
 int q6afe_vote_lpass_core_hw(struct device *dev, uint32_t hw_block_id,
 			     const char *client_name, uint32_t *client_handle);
 int q6afe_unvote_lpass_core_hw(struct device *dev, uint32_t hw_block_id,
