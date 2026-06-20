@@ -10,8 +10,10 @@
 #include <dt-bindings/leds/common.h>
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
+#include <dt-bindings/sound/qcom,q6asm.h>
 #include <dt-bindings/usb/pd.h>
 #include "sm8150.dtsi"
+#include "sm8150-wcd9340.dtsi"
 #include "pm8150.dtsi"
 #include "pm8150b.dtsi"
 #include "pm8150l.dtsi"
@@ -180,16 +182,6 @@
 			no-map;
 		};
 		
-		ramoops@a1600000 {
-			compatible = "ramoops";
-			reg = <0x0 0xa1600000 0x0 0x800000>;
-			console-size = <0x400000>;
-			ecc-size = <0>;
-			ftrace-size = <0>;
-			pmsg-size = <0x200000>;
-			record-size = <0>;
-			no-map;
-		};
 
 		rmtfs_mem: memory@fe101000 {
 			compatible = "qcom,rmtfs-mem";
@@ -594,6 +586,18 @@
 	};
 };
 
+&i2c1 {
+	status = "okay";
+	clock-frequency = <400000>;
+
+	tfa9874: speaker-codec@34 {
+		compatible = "nxp,tfa9874";
+		reg = <0x34>;
+		#sound-dai-cells = <0>;
+		sound-name-prefix = "SPKR";
+	};
+};
+
 &ipa {
 	status = "okay";
 	qcom,gsi-loader = "self";
@@ -783,6 +787,10 @@
 	linux,code = <KEY_VOLUMEDOWN>;
 };
 
+&qupv3_id_0 {
+	status = "okay";
+};
+
 &qupv3_id_1 {
 	status = "okay";
 };
@@ -809,6 +817,115 @@
 &remoteproc_slpi {
 	status = "disabled";
 	firmware-name = "qcom/sm8150/Xiaomi/raphael/slpi.mbn";
+};
+
+&q6afedai {
+	dai@22 {
+		reg = <QUATERNARY_MI2S_RX>;
+		qcom,sd-lines = <0>;  /* Use SD0 (GPIO 139) for playback */
+	};
+};
+
+&q6asmdai {
+	dai@0 {
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA1>;
+	};
+
+	dai@1 {
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA2>;
+	};
+};
+
+&sound {
+	compatible = "qcom,sm8150-sndcard";
+	pinctrl-0 = <&quat_mi2s_active
+		&quat_mi2s_sd0_active
+		&quat_mi2s_sd1_active>;
+	pinctrl-names = "default";
+	model = "Raphael";
+
+	audio-routing = "RX_BIAS", "MCLK",
+		"AMIC1", "MIC BIAS3",
+		"AMIC3", "MIC BIAS4";
+
+	mm1-dai-link {
+		link-name = "MultiMedia1";
+		cpu {
+			sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA1>;
+		};
+	};
+
+	mm2-dai-link {
+		link-name = "MultiMedia2";
+		cpu {
+			sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA2>;
+		};
+	};
+
+	speaker-dai-link {
+		link-name = "Quaternary MI2S Playback";
+		cpu {
+			sound-dai = <&q6afedai QUATERNARY_MI2S_RX>;
+		};
+
+		platform {
+			sound-dai = <&q6routing>;
+		};
+
+		codec {
+			sound-dai = <&tfa9874>;
+		};
+	};
+
+	slimcap-dai-link {
+		link-name = "SLIM Capture 1";
+		cpu {
+			sound-dai = <&q6afedai SLIMBUS_0_TX>;
+		};
+
+		platform {
+			sound-dai = <&q6routing>;
+		};
+
+		codec {
+			sound-dai = <&wcd9340 1>; /* AIF1_CAP */
+		};
+	};
+
+	slim-playback-dai-link {
+		link-name = "SLIMBUS_0 Playback";
+		cpu {
+			sound-dai = <&q6afedai SLIMBUS_0_RX>;
+		};
+
+		platform {
+			sound-dai = <&q6routing>;
+		};
+
+		codec {
+			sound-dai = <&wcd9340 0>; /* AIF1_PB */
+		};
+	};
+};
+
+&wcd9340 {
+	reset-gpios = <&tlmm 143 GPIO_ACTIVE_HIGH>;
+	vdd-buck-sido-supply = <&vreg_s4a_1p8>;
+	vdd-buck-supply = <&vreg_s4a_1p8>;
+	vdd-tx-supply = <&vreg_s4a_1p8>;
+	vdd-rx-supply = <&vreg_s4a_1p8>;
+	vdd-io-supply = <&vreg_s4a_1p8>;
+
+	qcom,micbias1-microvolt = <1800000>;
+	qcom,micbias2-microvolt = <2750000>;
+	qcom,micbias3-microvolt = <1800000>;
+	qcom,micbias4-microvolt = <1800000>;
+
+	qcom,hphl-jack-type-normally-open;
+	qcom,ground-jack-type-normally-open;
+	qcom,mbhc-buttons-vthreshold-microvolt = <75000 150000 237000 500000 500000 500000 500000 500000>;
+	qcom,mbhc-headset-vthreshold-microvolt = <2600000>;
+	qcom,mbhc-headphone-vthreshold-microvolt = <50000>;
 };
 
 &tlmm {
@@ -1098,6 +1215,29 @@
         slew-rate = <1>;
         bias-disable;
         output-high;
+    };
+
+    /* Speaker I2S pins */
+    quat_mi2s_active: quat-mi2s-active-state {
+		pins = "gpio137", "gpio138";
+		function = "qua_mi2s";
+		drive-strength = <8>;
+		bias-disable;
+		output-high;
+    };
+
+    quat_mi2s_sd0_active: quat-mi2s-sd0-active-state {
+		pins = "gpio139";
+		function = "qua_mi2s";
+		drive-strength = <8>;
+		bias-disable;
+    };
+
+    quat_mi2s_sd1_active: quat-mi2s-sd1-active-state {
+		pins = "gpio140";
+		function = "qua_mi2s";
+		drive-strength = <8>;
+		bias-disable;
     };
 };
 
