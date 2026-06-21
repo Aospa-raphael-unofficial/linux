@@ -279,9 +279,12 @@ static int nt37280_lh568wf3_ed01_probe(struct mipi_dsi_device *dsi)
 	struct nt37280_lh568wf3_ed01 *ctx;
 	int ret;
 
-	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
-	if (!ctx)
-		return -ENOMEM;
+	ctx = devm_drm_panel_alloc(dev, __typeof(*ctx), panel,
+			  &nt37280_lh568wf3_ed01_panel_funcs,
+			  DRM_MODE_CONNECTOR_DSI);
+
+	if (IS_ERR(ctx))
+		return PTR_ERR(ctx);
 
 	ret = devm_regulator_bulk_get_const(dev,
 					    ARRAY_SIZE(nt37280_lh568wf3_ed01_supplies),
@@ -303,8 +306,6 @@ static int nt37280_lh568wf3_ed01_probe(struct mipi_dsi_device *dsi)
 	dsi->mode_flags = MIPI_DSI_MODE_NO_EOT_PACKET |
 			  MIPI_DSI_CLOCK_NON_CONTINUOUS | MIPI_DSI_MODE_LPM;
 
-	drm_panel_init(&ctx->panel, dev, &nt37280_lh568wf3_ed01_panel_funcs,
-		       DRM_MODE_CONNECTOR_DSI);
 	ctx->panel.prepare_prev_first = true;
 
 	ctx->panel.backlight = nt37280_lh568wf3_ed01_create_backlight(dsi);
