@@ -999,7 +999,6 @@
         drive-strength = <2>;
         bias-disable;
         output-low;
-        power-source = <1>;
     };
 
     panel_te_pin: panel-te-state {
