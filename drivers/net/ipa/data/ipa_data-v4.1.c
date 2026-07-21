@@ -101,8 +101,8 @@ static const struct ipa_gsi_endpoint_data ipa_gsi_endpoint_data[] = {
 	},
 	[IPA_ENDPOINT_AP_MODEM_TX] = { /* Downstream: IPA_CLIENT_APPS_WAN_PROD */
 		.ee_id		= GSI_EE_AP,
-		.channel_id	= 2,
-		.endpoint_id	= 3,
+		.channel_id	= 3,
+		.endpoint_id	= 2,
 		.toward_ipa	= true,
 		.channel = {
 			.tre_count	= 512,
