@@ -7,6 +7,7 @@
 #include <linux/clk.h>
 #include <linux/device.h>
 #include <linux/interconnect.h>
+#include <linux/of.h>
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
 
@@ -270,7 +271,15 @@ ipa_power_init(struct device *dev, const struct ipa_power_data *data)
 	if (ret)
 		goto err_interconnect_exit;
 
-	pm_runtime_set_autosuspend_delay(dev, IPA_AUTOSUSPEND_DELAY);
+	{
+		const struct ipa_data *ipa_data = of_device_get_match_data(dev);
+		unsigned int autosuspend_delay = IPA_AUTOSUSPEND_DELAY;
+
+		if (ipa_data && ipa_data->version == IPA_VERSION_4_1)
+			autosuspend_delay = INT_MAX;
+
+		pm_runtime_set_autosuspend_delay(dev, autosuspend_delay);
+	}
 	pm_runtime_use_autosuspend(dev);
 	pm_runtime_enable(dev);
 
