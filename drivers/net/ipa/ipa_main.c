@@ -914,6 +914,14 @@ static int ipa_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_deconfig;
 done:
+	/*
+	 * IPA v4.1 (SM8150): modem HWP init requires IPA clocks/registers
+	 * to remain accessible after probe.  Runtime suspend causes the
+	 * modem to watchdog (~10-15s) waiting for HWP indications.
+	 */
+	if (data->version == IPA_VERSION_4_1)
+		pm_runtime_forbid(dev);
+
 	(void)pm_runtime_put_autosuspend(dev);
 
 	return 0;
@@ -990,6 +998,8 @@ static void ipa_remove(struct platform_device *pdev)
 
 	ipa_deconfig(ipa);
 out_power_put:
+	if (ipa->version == IPA_VERSION_4_1)
+		pm_runtime_allow(dev);
 	pm_runtime_put_noidle(dev);
 	ipa_smp2p_exit(ipa);
 	ipa_table_exit(ipa);

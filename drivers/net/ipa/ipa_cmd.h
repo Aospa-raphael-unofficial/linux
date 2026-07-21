@@ -141,6 +141,16 @@ u32 ipa_cmd_pipeline_clear_count(void);
 void ipa_cmd_pipeline_clear_wait(struct ipa *ipa);
 
 /**
+ * ipa_cmd_pipeline_clear_wait_timeout() - Wait for pipeline clear with timeout
+ * @ipa:	IPA pointer
+ * @timeout:	Timeout in jiffies
+ *
+ * Return: true if pipeline clear completed, false on timeout.
+ */
+bool ipa_cmd_pipeline_clear_wait_timeout(struct ipa *ipa,
+					 unsigned long timeout);
+
+/**
  * ipa_cmd_trans_alloc() - Allocate a transaction for the command TX endpoint
  * @ipa:	IPA pointer
  * @tre_count:	Number of elements in the transaction

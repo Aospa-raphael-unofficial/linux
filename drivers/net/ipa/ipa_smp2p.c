@@ -109,8 +109,22 @@ static void ipa_smp2p_notify(struct ipa_smp2p *smp2p)
 static irqreturn_t ipa_smp2p_modem_clk_query_isr(int irq, void *dev_id)
 {
 	struct ipa_smp2p *smp2p = dev_id;
+	struct ipa *ipa = smp2p->ipa;
+	struct device *dev = ipa->dev;
+	bool woke = false;
+	int ret;
+
+	if (pm_runtime_get_if_active(dev) <= 0) {
+		ret = pm_runtime_get_sync(dev);
+		if (ret < 0)
+			return IRQ_HANDLED;
+		woke = true;
+	}
 
 	ipa_smp2p_notify(smp2p);
+
+	if (woke)
+		(void)pm_runtime_put_autosuspend(dev);
 
 	return IRQ_HANDLED;
 }

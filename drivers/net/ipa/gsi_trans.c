@@ -610,8 +610,11 @@ void gsi_trans_commit(struct gsi_trans *trans, bool ring_db)
 }
 
 /* Commit a GSI transaction and wait for it to complete */
-void gsi_trans_commit_wait(struct gsi_trans *trans)
+bool gsi_trans_commit_wait_timeout(struct gsi_trans *trans,
+				   unsigned long timeout)
 {
+	unsigned long ret;
+
 	if (!trans->used_count)
 		goto out_trans_free;
 
@@ -619,10 +622,21 @@ void gsi_trans_commit_wait(struct gsi_trans *trans)
 
 	__gsi_trans_commit(trans, true);
 
-	wait_for_completion(&trans->completion);
+	ret = wait_for_completion_timeout(&trans->completion, timeout);
+	if (!ret)
+		dev_warn(trans->gsi->dev,
+			 "GSI transaction timed out (used %u TREs)\n",
+			 trans->used_count);
 
 out_trans_free:
 	gsi_trans_free(trans);
+
+	return !!ret;
+}
+
+void gsi_trans_commit_wait(struct gsi_trans *trans)
+{
+	(void)gsi_trans_commit_wait_timeout(trans, MAX_SCHEDULE_TIMEOUT);
 }
 
 /* Process the completion of a transaction; called while polling */
