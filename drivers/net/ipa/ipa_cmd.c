@@ -614,9 +614,21 @@ u32 ipa_cmd_pipeline_clear_count(void)
 	return 4;
 }
 
+bool ipa_cmd_pipeline_clear_wait_timeout(struct ipa *ipa,
+					 unsigned long timeout)
+{
+	unsigned long ret;
+
+	ret = wait_for_completion_timeout(&ipa->completion, timeout);
+	if (!ret)
+		dev_warn(ipa->dev, "IPA pipeline clear timed out\n");
+
+	return !!ret;
+}
+
 void ipa_cmd_pipeline_clear_wait(struct ipa *ipa)
 {
-	wait_for_completion(&ipa->completion);
+	(void)ipa_cmd_pipeline_clear_wait_timeout(ipa, MAX_SCHEDULE_TIMEOUT);
 }
 
 /* Allocate a transaction for the command TX endpoint */
