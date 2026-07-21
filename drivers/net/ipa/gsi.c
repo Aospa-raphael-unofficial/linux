@@ -945,6 +945,19 @@ int gsi_channel_start(struct gsi *gsi, u32 channel_id)
 	struct gsi_channel *channel = &gsi->channel[channel_id];
 	int ret;
 
+	/* A channel the AP does not own (e.g. a modem channel) has no NAPI
+	 * context registered, so channel->napi.dev is NULL.  Starting such a
+	 * channel would dereference a NULL napi->dev in napi_enable().  Guard
+	 * against a mis-configured endpoint table pointing at a foreign
+	 * channel rather than taking the box down with a NULL deref.
+	 */
+	if (!channel->gsi || !channel->napi.dev) {
+		dev_err(gsi->dev,
+			"channel %u not initialized for the AP, refusing start\n",
+			channel_id);
+		return -EINVAL;
+	}
+
 	/* Enable NAPI and the completion interrupt */
 	napi_enable(&channel->napi);
 	gsi_irq_ieob_enable_one(gsi, channel->evt_ring_id);
