@@ -1314,6 +1314,21 @@ bail:
 		list_del(&ctx->node);
 		spin_unlock(&fl->lock);
 		fastrpc_context_put(ctx);
+	} else if (err == -ETIMEDOUT) {
+		/*
+		 * Raphael (sm8150): the bounded invoke wait (10s) returned
+		 * without a response, but fastrpc_invoke_send() still holds
+		 * the in-flight reference until the late DSP response is
+		 * delivered through fastrpc_rpmsg_callback().  Release the
+		 * list reference now so the context does not leak while
+		 * waiting for that response; the response path frees it via
+		 * ctx->put_work, and the fastrpc_user refcount keeps fl
+		 * (and ctx->buf->fl) alive until then.
+		 */
+		spin_lock(&fl->lock);
+		list_del(&ctx->node);
+		spin_unlock(&fl->lock);
+		fastrpc_context_put(ctx);
 	}
 
 	if (err == -ERESTARTSYS) {
