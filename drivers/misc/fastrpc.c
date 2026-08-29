@@ -1278,7 +1278,18 @@ static int fastrpc_internal_invoke(struct fastrpc_user *fl,  u32 kernel,
 		if (!wait_for_completion_timeout(&ctx->work, 10 * HZ))
 			err = -ETIMEDOUT;
 	} else {
-		err = wait_for_completion_interruptible(&ctx->work);
+		/*
+		 * Raphael (sm8150) workaround: bound user-space invokes too.
+		 * A wedged DSP used to leave ssccli and friends blocked
+		 * forever, stalling hexagonrpcd jobs and leaking tasks.
+		 * 0 means timeout; a positive value means completion.
+		 */
+		err = wait_for_completion_interruptible_timeout(&ctx->work,
+							       10 * HZ);
+		if (!err)
+			err = -ETIMEDOUT;
+		else if (err > 0)
+			err = 0;
 	}
 
 	if (err)
