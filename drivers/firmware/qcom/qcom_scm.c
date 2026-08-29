@@ -2642,12 +2642,25 @@ int qcom_scm_wait_for_wq_completion(struct device *dev, u32 wq_ctx)
 {
 	struct qcom_scm *scm = dev_get_drvdata(dev);
 	struct completion *wq;
+	unsigned long ret;
 
 	wq = qcom_scm_get_completion(scm, wq_ctx);
 	if (IS_ERR(wq))
 		return PTR_ERR(wq);
 
-	wait_for_completion_state(wq, TASK_IDLE);
+	/*
+	 * Raphael (sm8150) workaround: when the secure world wedges, callers
+	 * used to sleep uninterruptibly forever, piling up D-state tasks
+	 * (fastrpc/ssccli) and blocking remoteproc stop. Bound the wait so
+	 * callers fail cleanly with -ETIMEDOUT instead. Reinitialize the
+	 * completion on timeout so a late response can't poison the next
+	 * user of this waitq context.
+	 */
+	ret = wait_for_completion_timeout(wq, 30 * HZ);
+	if (!ret) {
+		reinit_completion(wq);
+		return -ETIMEDOUT;
+	}
 
 	return 0;
 }
