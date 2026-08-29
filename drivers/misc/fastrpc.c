@@ -2449,6 +2449,36 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
 
 			err = qcom_scm_assign_mem(res.start, resource_size(&res), &src_perms,
 				    data->vmperms, data->vmcount);
+			if (err && data->vmcount) {
+				/*
+				 * Raphael (sm8150): after a DSP crash the secure
+				 * world may still hold ownership of the heap with
+				 * the DSP VMIDs, because the crash teardown does
+				 * not run fastrpc_rpmsg_remove() (so the reclaim
+				 * there is skipped) and the next assign fails
+				 * with -EINVAL. Reclaim ownership to HLOS and
+				 * retry the assign once.
+				 */
+				u64 reclaim_src = 0;
+				struct qcom_scm_vmperm hlos_perm = {
+					.vmid = QCOM_SCM_VMID_HLOS,
+					.perm = QCOM_SCM_PERM_RWX,
+				};
+				int i;
+
+				for (i = 0; i < data->vmcount; i++)
+					reclaim_src |= BIT(data->vmperms[i].vmid);
+
+				dev_warn(rdev, "fastrpc: scm assign failed (%d), reclaiming heap from DSP VMIDs and retrying\n", err);
+				if (!qcom_scm_assign_mem(res.start,
+						resource_size(&res),
+						&reclaim_src, &hlos_perm, 1))
+					err = qcom_scm_assign_mem(res.start,
+						resource_size(&res),
+						&src_perms,
+						data->vmperms,
+						data->vmcount);
+			}
 			if (err)
 				goto err_free_data;
 		}
@@ -2570,6 +2600,8 @@ static void fastrpc_rpmsg_remove(struct rpmsg_device *rpdev)
 
 			dst_perms.vmid = QCOM_SCM_VMID_HLOS;
 			dst_perms.perm = QCOM_SCM_PERM_RWX;
+			dev_info(&rpdev->dev,
+				"fastrpc: reclaiming remote heap ownership to HLOS\n");
 			if (qcom_scm_assign_mem(cctx->remote_heap->dma_addr,
 						(u64)cctx->remote_heap->size,
 						&src_perms, &dst_perms, 1))
