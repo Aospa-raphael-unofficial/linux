@@ -1646,7 +1646,9 @@ int venus_helper_vb2_start_streaming(struct venus_inst *inst)
 	if (ret)
 		goto err_bufs_free;
 
-	venus_pm_load_scale(inst);
+	ret = venus_pm_load_scale(inst);
+	if (ret)
+		goto err_unreg_bufs;
 
 	ret = hfi_session_load_res(inst);
 	if (ret)
