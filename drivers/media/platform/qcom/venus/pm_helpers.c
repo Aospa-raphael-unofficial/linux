@@ -70,6 +70,11 @@ static int core_clks_enable(struct venus_core *core)
 			goto err;
 	}
 
+	if (IS_IRIS1(core)) {
+		writel(0, core->wrapper_base + WRAPPER_CPU_CGC_DIS);
+		writel(0, core->wrapper_base + WRAPPER_CPU_CLOCK_CONFIG);
+	}
+
 	return 0;
 err:
 	while (i--)
