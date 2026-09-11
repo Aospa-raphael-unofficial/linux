@@ -37,7 +37,8 @@ properties:
     maxItems: 20
 
   memory-region:
-    maxItems: 1
+    minItems: 1
+    maxItems: 2
 
   power-domains:
     minItems: 1
