@@ -230,32 +230,28 @@ fail:
 }
 EXPORT_SYMBOL_GPL(venus_helper_alloc_dpb_bufs);
 
-static int intbufs_set_buffer(struct venus_inst *inst, u32 type)
+static int intbufs_set_buffer_req(struct venus_inst *inst,
+				 const struct hfi_buffer_requirements *bufreq)
 {
 	struct venus_core *core = inst->core;
 	struct device *dev = core->dev;
-	struct hfi_buffer_requirements bufreq;
 	struct hfi_buffer_desc bd;
 	struct intbuf *buf;
 	unsigned int i;
 	int ret;
 
-	ret = venus_helper_get_bufreq(inst, type, &bufreq);
-	if (ret)
+	if (!bufreq->size)
 		return 0;
 
-	if (!bufreq.size)
-		return 0;
-
-	for (i = 0; i < bufreq.count_actual; i++) {
+	for (i = 0; i < bufreq->count_actual; i++) {
 		buf = kzalloc_obj(*buf);
 		if (!buf) {
 			ret = -ENOMEM;
 			goto fail;
 		}
 
-		buf->type = bufreq.type;
-		buf->size = bufreq.size;
+		buf->type = bufreq->type;
+		buf->size = bufreq->size;
 		buf->attrs = DMA_ATTR_WRITE_COMBINE |
 			     DMA_ATTR_NO_KERNEL_MAPPING;
 		buf->va = dma_alloc_attrs(dev, buf->size, &buf->da, GFP_KERNEL,
@@ -287,6 +283,18 @@ dma_free:
 fail:
 	kfree(buf);
 	return ret;
+}
+
+static int intbufs_set_buffer(struct venus_inst *inst, u32 type)
+{
+	struct hfi_buffer_requirements bufreq;
+	int ret;
+
+	ret = venus_helper_get_bufreq(inst, type, &bufreq);
+	if (ret)
+		return 0;
+
+	return intbufs_set_buffer_req(inst, &bufreq);
 }
 
 static int intbufs_unset_buffers(struct venus_inst *inst)
@@ -337,11 +345,145 @@ static const unsigned int intbuf_types_6xx[] = {
 	HFI_BUFFER_INTERNAL_PERSIST_1,
 };
 
+/* The caller holds inst->lock throughout the encoder startup transaction. */
+static const struct hfi_buffer_requirements *
+intbufs_find_req(const union hfi_get_property *snapshot, u32 type)
+{
+	unsigned int i;
+
+	for (i = 0; i < HFI_BUFFER_TYPE_MAX; i++)
+		if (snapshot->bufreq[i].type == type)
+			return &snapshot->bufreq[i];
+
+	return NULL;
+}
+
+static int intbufs_validate_queue(struct venus_inst *inst,
+				 const union hfi_get_property *snapshot, u32 type)
+{
+	const struct hfi_buffer_requirements *req;
+	struct vb2_queue *q = v4l2_m2m_get_vq(inst->m2m_ctx, type);
+	struct vb2_buffer *vb;
+	struct hfi_buffer_requirements counts;
+	unsigned int count, minimum, i;
+
+	req = intbufs_find_req(snapshot, V4L2_TYPE_IS_OUTPUT(type) ?
+			       HFI_BUFFER_INPUT : HFI_BUFFER_OUTPUT);
+	if (!q || !req)
+		return -EINVAL;
+
+	counts = *req;
+	count = vb2_get_num_buffers(q);
+	minimum = max3(req->count_actual,
+		       hfi_bufreq_get_count_min(&counts,
+					HFI_VERSION_4XX),
+		       hfi_bufreq_get_count_min_host(&counts,
+					     HFI_VERSION_4XX));
+	if (!req->size || !minimum || count < minimum)
+		return -EINVAL;
+
+	for (i = 0; i < q->max_num_buffers; i++) {
+		vb = vb2_get_buffer(q, i);
+		if (vb && vb2_plane_size(vb, 0) < req->size)
+			return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int intbufs_validate_snapshot(const union hfi_get_property *snapshot)
+{
+	const struct hfi_buffer_requirements *req;
+	unsigned int i, j;
+	u32 minimum;
+	struct hfi_buffer_requirements counts;
+
+	/* Reject ambiguous replies before handing any internal memory to FW. */
+	for (i = 0; i < HFI_BUFFER_TYPE_MAX; i++) {
+		if (!snapshot->bufreq[i].type)
+			continue;
+		for (j = i + 1; j < HFI_BUFFER_TYPE_MAX; j++)
+			if (snapshot->bufreq[i].type == snapshot->bufreq[j].type)
+				return -EINVAL;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(intbuf_types_4xx); i++) {
+		req = intbufs_find_req(snapshot, intbuf_types_4xx[i]);
+		/* An absent entry or zero size is a genuinely optional buffer. */
+		if (!req || !req->size)
+			continue;
+
+		counts = *req;
+		minimum = max(hfi_bufreq_get_count_min(&counts,
+						      HFI_VERSION_4XX),
+			      hfi_bufreq_get_count_min_host(&counts,
+							   HFI_VERSION_4XX));
+		if (!req->count_actual || req->count_actual < minimum)
+			return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int intbufs_alloc_iris1_encoder(struct venus_inst *inst)
+{
+	union hfi_get_property snapshot = {};
+	const struct hfi_buffer_requirements *req;
+	unsigned int i;
+	int ret;
+
+	/*
+	 * Android Q takes a full requirements snapshot before registering
+	 * scratch/persist buffers. Do not interleave fresh GET_PROPERTY
+	 * requests with registration of those buffers. In particular, a
+	 * failed query must not be interpreted as an optional buffer.
+	 *
+	 * The caller has sent the final external counts. Revalidate existing
+	 * VB2 allocations against this post-count snapshot, rather than the
+	 * earlier, pre-count requirements used by venc_verify_conf().
+	 */
+	ret = hfi_session_get_property(inst, HFI_PROPERTY_CONFIG_BUFFER_REQUIREMENTS,
+				       &snapshot);
+	if (ret)
+		return ret;
+
+	ret = intbufs_validate_snapshot(&snapshot);
+	if (ret)
+		return ret;
+
+	ret = intbufs_validate_queue(inst, &snapshot,
+				    V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
+	if (ret)
+		return ret;
+
+	ret = intbufs_validate_queue(inst, &snapshot,
+				    V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < ARRAY_SIZE(intbuf_types_4xx); i++) {
+		req = intbufs_find_req(&snapshot, intbuf_types_4xx[i]);
+		if (!req || !req->size)
+			continue;
+
+		ret = intbufs_set_buffer_req(inst, req);
+		if (ret) {
+			intbufs_unset_buffers(inst);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
 int venus_helper_intbufs_alloc(struct venus_inst *inst)
 {
 	const unsigned int *intbuf;
 	size_t arr_sz, i;
 	int ret;
+
+	if (IS_IRIS1(inst->core) && inst->session_type == VIDC_SESSION_TYPE_ENC)
+		return intbufs_alloc_iris1_encoder(inst);
 
 	if (IS_V6(inst->core)) {
 		arr_sz = ARRAY_SIZE(intbuf_types_6xx);
