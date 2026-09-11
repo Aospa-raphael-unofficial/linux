@@ -958,6 +958,7 @@ static int venus_sys_set_default_properties(struct venus_hfi_device *hdev)
 {
 	struct device *dev = hdev->core->dev;
 	const struct venus_resources *res = hdev->core->res;
+	bool fw_low_power = venus_fw_low_power_mode && !IS_IRIS1(hdev->core);
 	int ret;
 
 	ret = venus_sys_set_debug(hdev, venus_fw_debug);
@@ -971,10 +972,15 @@ static int venus_sys_set_default_properties(struct venus_hfi_device *hdev)
 			dev_warn(dev, "setting idle response ON failed (%d)\n", ret);
 	}
 
-	ret = venus_sys_set_power_control(hdev, venus_fw_low_power_mode);
+	/*
+	 * IRIS1 keeps the video/CVP domains in software control. Do not
+	 * advertise autonomous power collapse without the matching GDSC
+	 * handoff. Host PC_PREP and secure runtime suspend remain separate.
+	 */
+	ret = venus_sys_set_power_control(hdev, fw_low_power);
 	if (ret)
-		dev_warn(dev, "setting hw power collapse ON failed (%d)\n",
-			 ret);
+		dev_warn(dev, "setting hw power collapse %s failed (%d)\n",
+			 fw_low_power ? "ON" : "OFF", ret);
 
 	/* For specific venus core, it is mandatory to set the UBWC configuration */
 	if (res->ubwc_conf) {
