@@ -912,6 +912,19 @@ static int coreid_power_v4(struct venus_inst *inst, int on)
 	struct venus_core *core = inst->core;
 	int ret;
 
+	if (IS_IRIS1(core)) {
+		/* Codec/CVP islands belong to the parent firmware power cycle. */
+		if (on == POWER_ON) {
+			ret = decide_core(inst);
+			if (!ret)
+				inst->core_acquired = true;
+			return ret;
+		}
+		inst->clk_data.core_id = VIDC_CORE_ID_DEFAULT;
+		inst->core_acquired = false;
+		return 0;
+	}
+
 	if (legacy_binding)
 		return 0;
 
@@ -1173,12 +1186,92 @@ static void core_put_v4(struct venus_core *core)
 {
 }
 
+static int iris1_reset_bridge(struct venus_core *core)
+{
+	unsigned int i, asserted = 0;
+	int ret = 0, err;
+
+	for (i = 0; i < core->res->resets_num; i++) {
+		ret = reset_control_assert(core->resets[i]);
+		if (ret)
+			break;
+		asserted++;
+	}
+
+	if (asserted)
+		usleep_range(150, 250);
+
+	/* Release every asserted reset, including when assertion failed. */
+	for (i = 0; i < asserted; i++) {
+		err = reset_control_deassert(core->resets[i]);
+		if (!ret)
+			ret = err;
+	}
+
+	return ret;
+}
+
+static int core_power_iris1(struct venus_core *core, int on)
+{
+	struct device *dev = core->dev;
+	unsigned int i, acquired = 0;
+	int ret = 0, err;
+
+	if (!core->pmdomains || core->res->vcodec_pmdomains_num != 3)
+		return -EINVAL;
+
+	if (on != POWER_ON) {
+		core_clks_disable(core);
+		ret = dev_pm_opp_set_rate(dev, 0);
+		for (i = core->res->vcodec_pmdomains_num; i > 0; i--) {
+			err = pm_runtime_put_sync(core->pmdomains->pd_devs[i - 1]);
+			if (!ret && err < 0)
+				ret = err;
+		}
+		return ret;
+	}
+
+	for (i = 0; i < core->res->vcodec_pmdomains_num; i++) {
+		ret = pm_runtime_resume_and_get(core->pmdomains->pd_devs[i]);
+		if (ret < 0)
+			goto unwind;
+		acquired++;
+
+		/*
+		 * Keep video/CVP on throughout the firmware cycle. Inter-frame
+		 * hardware power collapse is a later optimization.
+		 */
+		if (i) {
+			ret = dev_pm_genpd_set_hwmode(core->pmdomains->pd_devs[i], false);
+			if (ret)
+				goto unwind;
+		}
+	}
+
+	ret = iris1_reset_bridge(core);
+	if (ret)
+		goto unwind;
+
+	ret = core_clks_enable(core);
+	if (!ret)
+		return 0;
+
+unwind:
+	dev_pm_opp_set_rate(dev, 0);
+	while (acquired)
+		pm_runtime_put_sync(core->pmdomains->pd_devs[--acquired]);
+	return ret;
+}
+
 static int core_power_v4(struct venus_core *core, int on)
 {
 	struct device *dev = core->dev;
 	struct device *pmctrl = core->pmdomains ?
 			core->pmdomains->pd_devs[0] : NULL;
 	int ret = 0;
+
+	if (IS_IRIS1(core))
+		return core_power_iris1(core, on);
 
 	if (on == POWER_ON) {
 		if (pmctrl) {
