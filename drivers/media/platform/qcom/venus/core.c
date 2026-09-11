@@ -1170,6 +1170,41 @@ static const struct venus_resources qcm2290_res = {
 	.min_fw = &min_fw,
 };
 
+/* Conservative no-system-cache vote from the downstream bus ceiling. */
+static const struct bw_tbl sm8150_bw_table[] = {
+	{ 0, 6533000, 0, 6533000, 0 },
+};
+
+static const struct venus_resources sm8150_res = {
+	.bw_tbl_enc = sm8150_bw_table,
+	.bw_tbl_enc_size = ARRAY_SIZE(sm8150_bw_table),
+	.bw_tbl_dec = sm8150_bw_table,
+	.bw_tbl_dec_size = ARRAY_SIZE(sm8150_bw_table),
+	.clks = { "iface", "vcodec0_bus", "cvp_bus", "core",
+		  "vcodec0_core", "cvp_core", "bus" },
+	.clks_num = 7,
+	.resets = { "bus", "core", "vcodec0", "cvp" },
+	.resets_num = 4,
+	.vcodec_pmdomains = (const char *[]) { "venus", "vcodec0", "cvp" },
+	.vcodec_pmdomains_num = 3,
+	.opp_pmdomain = (const char *[]) { "mmcx" },
+	.vcodec_num = 1,
+	.max_load = 3916800,
+	.hfi_version = HFI_VERSION_4XX,
+	.vpu_version = VPU_VERSION_IRIS1,
+	.num_vpp_pipes = 2,
+	.vmem_id = VIDC_RESOURCE_NONE,
+	.dma_mask = 0xe0000000 - 1,
+	.cp_start = 0,
+	.cp_size = 0x25800000,
+	.cp_nonpixel_start = 0x1000000,
+	.cp_nonpixel_size = 0x24800000,
+	.fwname = "qcom/sm8150/venus.mbn",
+	.dec_nodename = "video-decoder",
+	.enc_nodename = "video-encoder",
+};
+
+
 static const struct of_device_id venus_dt_match[] = {
 	{ .compatible = "qcom,msm8916-venus", .data = &msm8916_res, },
 	{ .compatible = "qcom,msm8939-venus", .data = &msm8939_res, },
@@ -1182,6 +1217,7 @@ static const struct of_device_id venus_dt_match[] = {
 	{ .compatible = "qcom,sdm845-venus-v2", .data = &sdm845_res_v2, },
 #if (!IS_ENABLED(CONFIG_VIDEO_QCOM_IRIS))
 	{ .compatible = "qcom,sc7280-venus", .data = &sc7280_res, },
+	{ .compatible = "qcom,sm8150-venus", .data = &sm8150_res, },
 	{ .compatible = "qcom,sm8250-venus", .data = &sm8250_res, },
 #endif
 	{ }
