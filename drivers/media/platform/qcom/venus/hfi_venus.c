@@ -553,6 +553,12 @@ static int venus_run(struct venus_hfi_device *hdev)
 	if (hdev->sfr.da)
 		writel(hdev->sfr.da, cpu_cs_base + SFR_ADDR);
 
+	if (IS_IRIS1(hdev->core)) {
+		writel(hdev->ifaceq_table.da, cpu_cs_base + CPU_CS_DSP_QTBL_ADDR);
+		writel(hdev->ifaceq_table.da, cpu_cs_base + CPU_CS_DSP_UC_REGION_ADDR);
+		writel(SHARED_QSIZE, cpu_cs_base + CPU_CS_DSP_UC_REGION_SIZE);
+	}
+
 	ret = venus_boot_core(hdev);
 	if (ret) {
 		dev_err(dev, "failed to reset venus core\n");

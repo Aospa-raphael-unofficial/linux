@@ -25,6 +25,11 @@
 
 #define CPU_CS_A2HSOFTINTCLR			0x1c
 
+/* IRIS1 firmware expects a DSP queue map even without a CVP session. */
+#define CPU_CS_DSP_QTBL_ADDR			0x34
+#define CPU_CS_DSP_UC_REGION_ADDR		0x38
+#define CPU_CS_DSP_UC_REGION_SIZE		0x3c
+
 #define VIDC_CTRL_INIT				0x48
 #define VIDC_CTRL_INIT_RESERVED_BITS31_1_MASK	0xfffffffe
 #define VIDC_CTRL_INIT_RESERVED_BITS31_1_SHIFT	1
