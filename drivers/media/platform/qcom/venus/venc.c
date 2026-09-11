@@ -1509,7 +1509,16 @@ static void venc_buf_done(struct venus_inst *inst, unsigned int buf_type,
 
 	if (type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
 		vb = &vbuf->vb2_buf;
+		if (IS_IRIS1(inst->core) &&
+		    (data_offset > vb2_plane_size(vb, 0) ||
+		     bytesused > vb2_plane_size(vb, 0) - data_offset)) {
+			vb2_set_plane_payload(vb, 0, 0);
+			vb->planes[0].data_offset = 0;
+			v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_ERROR);
+			return;
+		}
 		vb2_set_plane_payload(vb, 0, bytesused + data_offset);
+
 		vb->planes[0].data_offset = data_offset;
 		vb->timestamp = timestamp_us * NSEC_PER_USEC;
 		vbuf->sequence = inst->sequence_cap++;
