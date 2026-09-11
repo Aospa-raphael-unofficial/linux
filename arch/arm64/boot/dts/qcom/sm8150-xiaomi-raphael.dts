@@ -1312,6 +1312,11 @@
 	status = "okay";
 };
 
+&venus {
+	firmware-name = "qcom/sm8150/Xiaomi/raphael/venus.mbn";
+	status = "okay";
+};
+
 &wifi {
 	vdd-0.8-cx-mx-supply = <&vdda_wcss_pll>;
 	vdd-1.8-xo-supply = <&vreg_pmu_xo>;
