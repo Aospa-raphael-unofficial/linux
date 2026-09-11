@@ -1218,19 +1218,46 @@ static void dsi_wait4video_done(struct msm_dsi_host *msm_host)
 static void dsi_wait4video_eng_busy(struct msm_dsi_host *msm_host)
 {
 	u32 data;
-
-	if (!(msm_host->mode_flags & MIPI_DSI_MODE_VIDEO))
-		return;
+	unsigned long timeout;
 
 	data = dsi_read(msm_host, REG_DSI_STATUS0);
 
-	/* if video mode engine is not busy, its because
-	 * either timing engine was not turned on or the
-	 * DSI controller has finished transmitting the video
-	 * data already, so no need to wait in those cases
-	 */
-	if (!(data & DSI_STATUS0_VIDEO_MODE_ENGINE_BUSY))
+	if (msm_host->mode_flags & MIPI_DSI_MODE_VIDEO) {
+		/* if video mode engine is not busy, its because
+		 * either timing engine was not turned on or the
+		 * DSI controller has finished transmitting the video
+		 * data already, so no need to wait in those cases
+		 */
+		if (!(data & DSI_STATUS0_VIDEO_MODE_ENGINE_BUSY))
+			return;
+	} else {
+		/*
+		 * command mode: frames are TE-triggered HS bursts
+		 * submitted by the DPU encoder path, which does not
+		 * take cmd_mutex. Wait for the in-flight burst to
+		 * drain before putting DCS commands on the bus,
+		 * otherwise the command DMA interleaves with the
+		 * video burst and the HS transmission gets stretched
+		 * past its timeout (dsi_err_worker status=5 with
+		 * DSI_HS_TX_TIMEOUT + four-lane FIFO underflow,
+		 * visible as flicker/tearing).
+		 */
+		if (!(data & DSI_STATUS0_CMD_MODE_ENGINE_BUSY))
+			return;
+
+		timeout = jiffies + msecs_to_jiffies(70);
+		do {
+			usleep_range(50, 100);
+			data = dsi_read(msm_host, REG_DSI_STATUS0);
+		} while ((data & DSI_STATUS0_CMD_MODE_ENGINE_BUSY) &&
+			 time_before(jiffies, timeout));
+
+		if (data & DSI_STATUS0_CMD_MODE_ENGINE_BUSY)
+			DRM_DEV_ERROR(&msm_host->pdev->dev,
+				      "wait for cmd mode engine idle timed out\n");
+
 		return;
+	}
 
 	if (msm_host->power_on && msm_host->enabled) {
 		dsi_wait4video_done(msm_host);
