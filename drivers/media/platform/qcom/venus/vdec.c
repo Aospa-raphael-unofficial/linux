@@ -732,10 +732,16 @@ static int vdec_set_work_route(struct venus_inst *inst)
 	u32 ptype = HFI_PROPERTY_PARAM_WORK_ROUTE;
 	struct hfi_video_work_route wr;
 
-	if (!(IS_IRIS2(inst->core) || IS_IRIS2_1(inst->core)))
+	if (!(IS_IRIS1(inst->core) || IS_IRIS2(inst->core) ||
+	      IS_IRIS2_1(inst->core)))
 		return 0;
 
 	wr.video_work_route = inst->core->res->num_vpp_pipes;
+	if (IS_IRIS1(inst->core) &&
+	    (inst->hfi_codec == HFI_VIDEO_CODEC_MPEG2 ||
+	     (inst->hfi_codec == HFI_VIDEO_CODEC_H264 &&
+	      inst->pic_struct != HFI_INTERLACE_FRAME_PROGRESSIVE)))
+		wr.video_work_route = 1;
 
 	return hfi_session_set_property(inst, ptype, &wr);
 }
@@ -758,6 +764,10 @@ static int vdec_output_conf(struct venus_inst *inst)
 	int ret;
 
 	ret = venus_helper_set_work_mode(inst);
+	if (ret)
+		return ret;
+
+	ret = vdec_set_work_route(inst);
 	if (ret)
 		return ret;
 
@@ -1147,10 +1157,6 @@ static int vdec_start_output(struct venus_inst *inst)
 	inst->next_buf_last = false;
 
 	ret = vdec_set_properties(inst);
-	if (ret)
-		return ret;
-
-	ret = vdec_set_work_route(inst);
 	if (ret)
 		return ret;
 
