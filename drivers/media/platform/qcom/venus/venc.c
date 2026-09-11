@@ -327,7 +327,18 @@ static int venc_g_fmt(struct file *file, void *fh, struct v4l2_format *f)
 		pixmp->height = inst->out_height;
 	}
 
+	if (IS_IRIS1(inst->core))
+		pixmp->plane_fmt[0].sizeimage = 0;
+
 	venc_try_fmt_common(inst, f);
+
+	if (IS_IRIS1(inst->core) &&
+	    vb2_is_busy(v4l2_m2m_get_vq(inst->m2m_ctx, f->type))) {
+		u32 size = V4L2_TYPE_IS_OUTPUT(f->type) ? inst->input_buf_size :
+							      inst->output_buf_size;
+
+		pixmp->plane_fmt[0].sizeimage = max(pixmp->plane_fmt[0].sizeimage, size);
+	}
 
 	return 0;
 }
