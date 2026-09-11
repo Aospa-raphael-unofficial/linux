@@ -1,0 +1,92 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/qcom,sm8150-venus.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Qualcomm SM8150 Venus video encoder and decoder
+
+maintainers:
+  - snowf14k3 <60956553+snowf14k3@users.noreply.github.com>
+
+description: |
+  SM8150 uses IRIS1/VPU5 with HFI4. MVS0 is the video codec island;
+  MVS1 is the CVP island and is not a second video codec core.
+
+allOf:
+  - $ref: qcom,venus-common.yaml#
+
+properties:
+  compatible:
+    const: qcom,sm8150-venus
+
+  clocks:
+    maxItems: 7
+
+  clock-names:
+    items:
+      - const: iface
+      - const: vcodec0_bus
+      - const: cvp_bus
+      - const: core
+      - const: vcodec0_core
+      - const: cvp_core
+      - const: bus
+
+  resets:
+    maxItems: 4
+
+  reset-names:
+    items:
+      - const: bus
+      - const: core
+      - const: vcodec0
+      - const: cvp
+
+  power-domains:
+    maxItems: 4
+
+  power-domain-names:
+    items:
+      - const: venus
+      - const: vcodec0
+      - const: cvp
+      - const: mmcx
+
+  iommus:
+    maxItems: 1
+
+  memory-region:
+    minItems: 2
+    maxItems: 2
+    description: Firmware carveout followed by the protected IOVA reservation.
+
+  memory-region-names:
+    items:
+      - const: firmware
+      - const: iova
+
+  interconnects:
+    maxItems: 2
+
+  interconnect-names:
+    items:
+      - const: video-mem
+      - const: cpu-cfg
+
+  operating-points-v2: true
+  opp-table:
+    type: object
+
+required:
+  - compatible
+  - resets
+  - reset-names
+  - power-domain-names
+  - iommus
+  - memory-region-names
+  - interconnects
+  - interconnect-names
+  - operating-points-v2
+
+unevaluatedProperties: false
