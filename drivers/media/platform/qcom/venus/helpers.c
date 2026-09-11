@@ -7,6 +7,7 @@
 #include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
+#include <linux/sizes.h>
 #include <linux/kernel.h>
 #include <media/videobuf2-dma-contig.h>
 #include <media/v4l2-mem2mem.h>
@@ -237,11 +238,19 @@ static int intbufs_set_buffer_req(struct venus_inst *inst,
 	struct device *dev = core->dev;
 	struct hfi_buffer_desc bd;
 	struct intbuf *buf;
+	u64 alloc_size = bufreq->size;
 	unsigned int i;
 	int ret;
 
 	if (!bufreq->size)
 		return 0;
+
+	/* Android Q registers the allocation extent, rounded to 4 KiB. */
+	if (IS_IRIS1(core) && inst->session_type == VIDC_SESSION_TYPE_ENC) {
+		alloc_size = ALIGN(alloc_size, SZ_4K);
+		if (alloc_size > U32_MAX)
+			return -EOVERFLOW;
+	}
 
 	for (i = 0; i < bufreq->count_actual; i++) {
 		buf = kzalloc_obj(*buf);
@@ -251,7 +260,7 @@ static int intbufs_set_buffer_req(struct venus_inst *inst,
 		}
 
 		buf->type = bufreq->type;
-		buf->size = bufreq->size;
+		buf->size = alloc_size;
 		buf->attrs = DMA_ATTR_WRITE_COMBINE |
 			     DMA_ATTR_NO_KERNEL_MAPPING;
 		buf->va = dma_alloc_attrs(dev, buf->size, &buf->da, GFP_KERNEL,
