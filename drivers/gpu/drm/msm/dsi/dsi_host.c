@@ -2207,8 +2207,17 @@ int msm_dsi_host_xfer_prepare(struct mipi_dsi_host *host,
 	 * mdp clock need to be enabled to receive dsi interrupt
 	 */
 	pm_runtime_get_sync(&msm_host->pdev->dev);
-	cfg_hnd->ops->link_clk_set_rate(msm_host);
-	cfg_hnd->ops->link_clk_enable(msm_host);
+
+	/*
+	 * The active command-mode display already owns the DSI link clocks.
+	 * Retuning/re-enabling them while CMD MDP is pushing a TE-triggered
+	 * frame can starve the DSI HS lane FIFOs. Only acquire link clocks
+	 * here when the host is not already powering an enabled display.
+	 */
+	if (!msm_host->power_on || !msm_host->enabled) {
+		cfg_hnd->ops->link_clk_set_rate(msm_host);
+		cfg_hnd->ops->link_clk_enable(msm_host);
+	}
 
 	/* TODO: vote for bus bandwidth */
 
@@ -2239,7 +2248,8 @@ void msm_dsi_host_xfer_restore(struct mipi_dsi_host *host,
 
 	/* TODO: unvote for bus bandwidth */
 
-	cfg_hnd->ops->link_clk_disable(msm_host);
+	if (!msm_host->power_on || !msm_host->enabled)
+		cfg_hnd->ops->link_clk_disable(msm_host);
 	pm_runtime_put(&msm_host->pdev->dev);
 }
 
