@@ -1105,6 +1105,73 @@ static int venc_out_num_buffers(struct venus_inst *inst, unsigned int *num)
 	return 0;
 }
 
+static int venc_queue_setup_iris1(struct vb2_queue *q, unsigned int *num_buffers,
+				  unsigned int *num_planes, unsigned int sizes[])
+{
+	struct venus_inst *inst = vb2_get_drv_priv(q);
+	struct hfi_buffer_requirements req;
+	unsigned int minimum, size, existing = vb2_get_num_buffers(q);
+	bool input = V4L2_TYPE_IS_OUTPUT(q->type);
+	u32 type = input ? HFI_BUFFER_INPUT : HFI_BUFFER_OUTPUT;
+	int ret, put_ret;
+
+	if (*num_planes && *num_planes != 1)
+		return -EINVAL;
+
+	ret = venc_pm_get(inst);
+	if (ret)
+		return ret;
+
+	mutex_lock(&inst->lock);
+	ret = venc_init_session(inst);
+	if (ret)
+		goto unlock;
+
+	ret = venus_helper_get_bufreq(inst, type, &req);
+	if (ret)
+		goto unlock;
+
+	minimum = max3(req.count_actual,
+		       hfi_bufreq_get_count_min(&req, HFI_VERSION_4XX),
+		       hfi_bufreq_get_count_min_host(&req, HFI_VERSION_4XX));
+	if (!req.size || !minimum || minimum > q->max_num_buffers) {
+		ret = -EINVAL;
+		goto unlock;
+	}
+
+	size = req.size;
+	if (input)
+		size = max(size, venus_helper_get_framesz(inst->fmt_out->pixfmt,
+							  inst->out_width,
+							  inst->out_height));
+	else
+		size = max(size, inst->output_buf_size);
+
+	if (*num_planes) {
+		if (sizes[0] < size) {
+			ret = -EINVAL;
+			goto unlock;
+		}
+	} else {
+		*num_planes = 1;
+		sizes[0] = size;
+	}
+
+	minimum = max(minimum, 4U);
+	if (existing < minimum)
+		*num_buffers = max(*num_buffers, minimum - existing);
+
+	if (input)
+		inst->input_buf_size = size;
+	else
+		inst->output_buf_size = size;
+
+unlock:
+	mutex_unlock(&inst->lock);
+	put_ret = venc_pm_put(inst, false);
+	return ret ? ret : put_ret;
+}
+
 static int venc_queue_setup(struct vb2_queue *q,
 			    unsigned int *num_buffers, unsigned int *num_planes,
 			    unsigned int sizes[], struct device *alloc_devs[])
@@ -1114,7 +1181,7 @@ static int venc_queue_setup(struct vb2_queue *q,
 	unsigned int num, min = 4;
 	int ret;
 
-	if (*num_planes) {
+	if (*num_planes && !IS_IRIS1(core)) {
 		if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE &&
 		    *num_planes != inst->fmt_out->num_planes)
 			return -EINVAL;
@@ -1143,6 +1210,9 @@ static int venc_queue_setup(struct vb2_queue *q,
 		if (ret)
 			return ret;
 	}
+
+	if (IS_IRIS1(core))
+		return venc_queue_setup_iris1(q, num_buffers, num_planes, sizes);
 
 	ret = venc_pm_get(inst);
 	if (ret)
@@ -1244,11 +1314,54 @@ static void venc_buf_cleanup(struct vb2_buffer *vb)
 		venc_release_session(inst);
 }
 
+static int venc_verify_queue_iris1(struct venus_inst *inst, u32 type)
+{
+	struct hfi_buffer_requirements req;
+	struct vb2_queue *q = v4l2_m2m_get_vq(inst->m2m_ctx, type);
+	bool input = V4L2_TYPE_IS_OUTPUT(type);
+	struct vb2_buffer *vb;
+	unsigned int minimum, i, count = vb2_get_num_buffers(q);
+	int ret;
+
+	ret = venus_helper_get_bufreq(inst,
+				      input ? HFI_BUFFER_INPUT : HFI_BUFFER_OUTPUT,
+				      &req);
+	if (ret)
+		return ret;
+
+	minimum = max3(req.count_actual,
+		       hfi_bufreq_get_count_min(&req, HFI_VERSION_4XX),
+		       hfi_bufreq_get_count_min_host(&req, HFI_VERSION_4XX));
+	if (!req.size || !minimum || count < minimum)
+		return -EINVAL;
+
+	for (i = 0; i < q->max_num_buffers; i++) {
+		vb = vb2_get_buffer(q, i);
+		if (vb && vb2_plane_size(vb, 0) < req.size)
+			return -EINVAL;
+	}
+
+	if (input)
+		inst->num_input_bufs = count;
+	else
+		inst->num_output_bufs = count;
+
+	return 0;
+}
+
 static int venc_verify_conf(struct venus_inst *inst)
 {
 	enum hfi_version ver = inst->core->res->hfi_version;
 	struct hfi_buffer_requirements bufreq;
 	int ret;
+
+	if (IS_IRIS1(inst->core)) {
+		ret = venc_verify_queue_iris1(inst, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
+		if (ret)
+			return ret;
+
+		return venc_verify_queue_iris1(inst, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
+	}
 
 	if (!inst->num_input_bufs || !inst->num_output_bufs)
 		return -EINVAL;
