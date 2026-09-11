@@ -1237,6 +1237,42 @@ static int venus_core_trigger_ssr(struct venus_core *core, u32 trigger_type)
 	return venus_iface_cmdq_write(hdev, &pkt, false);
 }
 
+/* Only used after a failed IRIS1 session-init wait, never to change state. */
+void venus_hfi_session_init_timeout(struct venus_core *core)
+{
+	struct venus_hfi_device *hdev = to_hfi_priv(core);
+	struct hfi_queue_header *qhdr;
+	unsigned int i;
+
+	if (!IS_IRIS1(core) || !hdev)
+		return;
+
+	mutex_lock(&hdev->lock);
+	dev_err_ratelimited(core->dev,
+			    "IRIS1 session-init timeout: state=%u powered=%u suspended=%u\n",
+			    hdev->state, hdev->power_enabled, hdev->suspended);
+
+	if (hdev->power_enabled && !hdev->suspended)
+		dev_err_ratelimited(core->dev,
+				    "IRIS1 status: ctrl=%#x cpu=%#x irq=%#x mask=%#x\n",
+				    readl(core->cpu_cs_base + CPU_CS_SCIACMDARG0),
+				    readl(core->wrapper_base + WRAPPER_CPU_STATUS),
+				    readl(core->wrapper_base + WRAPPER_INTR_STATUS),
+				    readl(core->wrapper_base + WRAPPER_INTR_MASK));
+
+	/* Firmware may update these fields while this snapshot is read. */
+	for (i = IFACEQ_CMD_IDX; i <= IFACEQ_MSG_IDX; i++) {
+		qhdr = hdev->queues[i].qhdr;
+		if (!qhdr)
+			continue;
+		dev_err_ratelimited(core->dev,
+				    "IRIS1 q%u: rd=%u wr=%u rx_req=%u tx_req=%u\n", i,
+				    READ_ONCE(qhdr->read_idx), READ_ONCE(qhdr->write_idx),
+				    READ_ONCE(qhdr->rx_req), READ_ONCE(qhdr->tx_req));
+	}
+	mutex_unlock(&hdev->lock);
+}
+
 static int venus_session_init(struct venus_inst *inst, u32 session_type,
 			      u32 codec)
 {
