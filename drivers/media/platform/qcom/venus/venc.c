@@ -658,6 +658,29 @@ static void venc_pm_touch(struct venus_inst *inst)
 	pm_runtime_mark_last_busy(inst->core->dev_enc);
 }
 
+static int venc_set_work_route(struct venus_inst *inst)
+{
+	struct venc_controls *ctr = &inst->controls.enc;
+	struct hfi_video_work_route wr;
+	u64 mbs_per_sec;
+
+	if (!IS_IRIS1(inst->core))
+		return 0;
+
+	wr.video_work_route = inst->core->res->num_vpp_pipes;
+	mbs_per_sec = (u64)DIV_ROUND_UP(inst->width, 16) *
+		     DIV_ROUND_UP(inst->height, 16) * inst->fps;
+
+	if (inst->hfi_codec == HFI_VIDEO_CODEC_VP8 ||
+	    (ctr->bitrate_mode != V4L2_MPEG_VIDEO_BITRATE_MODE_CQ &&
+	     (ctr->multi_slice_mode == V4L2_MPEG_VIDEO_MULTI_SLICE_MODE_MAX_BYTES ||
+	      (ctr->bitrate_mode == V4L2_MPEG_VIDEO_BITRATE_MODE_CBR &&
+	       mbs_per_sec <= 108000))))
+		wr.video_work_route = 1;
+
+	return hfi_session_set_property(inst, HFI_PROPERTY_PARAM_WORK_ROUTE, &wr);
+}
+
 static int venc_set_properties(struct venus_inst *inst)
 {
 	struct venc_controls *ctr = &inst->controls.enc;
@@ -676,6 +699,10 @@ static int venc_set_properties(struct venus_inst *inst)
 	int ret;
 
 	ret = venus_helper_set_work_mode(inst);
+	if (ret)
+		return ret;
+
+	ret = venc_set_work_route(inst);
 	if (ret)
 		return ret;
 
