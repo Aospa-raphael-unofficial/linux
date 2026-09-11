@@ -58,6 +58,12 @@ static int core_clks_enable(struct venus_core *core)
 		dev_pm_opp_put(opp);
 	}
 
+	if (IS_IRIS1(core)) {
+		ret = dev_pm_opp_set_rate(dev, freq);
+		if (ret)
+			return ret;
+	}
+
 	for (i = 0; i < res->clks_num; i++) {
 		if (IS_V6(core) || (IS_V4(core) && is_lite(core))) {
 			ret = clk_set_rate(core->clks[i], freq);
