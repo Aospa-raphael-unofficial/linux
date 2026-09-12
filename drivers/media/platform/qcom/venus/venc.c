@@ -1329,34 +1329,19 @@ static void venc_buf_cleanup(struct vb2_buffer *vb)
 		venc_release_session(inst);
 }
 
-static int venc_verify_queue_iris1(struct venus_inst *inst, u32 type)
+static int venc_set_queue_count_iris1(struct venus_inst *inst, u32 type)
 {
-	struct hfi_buffer_requirements req;
 	struct vb2_queue *q = v4l2_m2m_get_vq(inst->m2m_ctx, type);
-	bool input = V4L2_TYPE_IS_OUTPUT(type);
-	struct vb2_buffer *vb;
-	unsigned int minimum, i, count = vb2_get_num_buffers(q);
-	int ret;
+	unsigned int count;
 
-	ret = venus_helper_get_bufreq(inst,
-				      input ? HFI_BUFFER_INPUT : HFI_BUFFER_OUTPUT,
-				      &req);
-	if (ret)
-		return ret;
-
-	minimum = max3(req.count_actual,
-		       hfi_bufreq_get_count_min(&req, HFI_VERSION_4XX),
-		       hfi_bufreq_get_count_min_host(&req, HFI_VERSION_4XX));
-	if (!req.size || !minimum || count < minimum)
+	if (!q)
 		return -EINVAL;
 
-	for (i = 0; i < q->max_num_buffers; i++) {
-		vb = vb2_get_buffer(q, i);
-		if (vb && vb2_plane_size(vb, 0) < req.size)
-			return -EINVAL;
-	}
+	count = vb2_get_num_buffers(q);
+	if (!count)
+		return -EINVAL;
 
-	if (input)
+	if (V4L2_TYPE_IS_OUTPUT(type))
 		inst->num_input_bufs = count;
 	else
 		inst->num_output_bufs = count;
@@ -1371,11 +1356,18 @@ static int venc_verify_conf(struct venus_inst *inst)
 	int ret;
 
 	if (IS_IRIS1(inst->core)) {
-		ret = venc_verify_queue_iris1(inst, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
+		/*
+		 * Capture the negotiated VB2 counts before sending BUFFER_COUNT_ACTUAL.
+		 * The single post-count requirements snapshot used for full count and
+		 * extent validation is taken by the IRIS1 internal-buffer path.
+		 */
+		ret = venc_set_queue_count_iris1(inst,
+						 V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
 		if (ret)
 			return ret;
 
-		return venc_verify_queue_iris1(inst, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
+		return venc_set_queue_count_iris1(inst,
+						   V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
 	}
 
 	if (!inst->num_input_bufs || !inst->num_output_bufs)
