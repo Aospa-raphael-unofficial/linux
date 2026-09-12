@@ -216,6 +216,7 @@ struct venus_core {
 	struct device *dev;
 	struct device *dev_dec;
 	struct device *dev_enc;
+	struct device *secure_nonpixel_dev;
 	unsigned int use_tz;
 	struct video_firmware {
 		struct device *dev;
