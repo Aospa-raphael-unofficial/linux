@@ -374,6 +374,7 @@ enum venus_enc_state {
 	VENUS_ENC_STATE_ENCODING	= 2,
 	VENUS_ENC_STATE_STOPPED		= 3,
 	VENUS_ENC_STATE_DRAIN		= 4,
+	VENUS_ENC_STATE_CONFIGURED	= 5,
 };
 
 struct venus_ts_metadata {
