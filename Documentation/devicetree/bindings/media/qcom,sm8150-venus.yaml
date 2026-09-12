@@ -17,8 +17,19 @@ allOf:
   - $ref: qcom,venus-common.yaml#
 
 properties:
+  '#address-cells':
+    const: 2
+
+  '#size-cells':
+    const: 2
+
   compatible:
     const: qcom,sm8150-venus
+
+  ranges: true
+
+  dma-ranges:
+    maxItems: 1
 
   clocks:
     maxItems: 7
@@ -78,8 +89,37 @@ properties:
   opp-table:
     type: object
 
+  secure-non-pixel:
+    type: object
+    additionalProperties: false
+
+    properties:
+      compatible:
+        const: qcom,venus-secure-context
+
+      iommus:
+        maxItems: 1
+
+      qcom,secure-vmid:
+        $ref: /schemas/types.yaml#/definitions/uint32
+        description: Secure world VMID allowed to read the context page tables.
+        const: 11
+
+      memory-region:
+        maxItems: 1
+
+    required:
+      - compatible
+      - iommus
+      - qcom,secure-vmid
+      - memory-region
+
 required:
+  - '#address-cells'
+  - '#size-cells'
   - compatible
+  - ranges
+  - dma-ranges
   - resets
   - reset-names
   - power-domain-names
@@ -88,5 +128,6 @@ required:
   - interconnects
   - interconnect-names
   - operating-points-v2
+  - secure-non-pixel
 
 unevaluatedProperties: false
