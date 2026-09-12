@@ -471,6 +471,21 @@ static int intbufs_alloc_iris1_encoder(struct venus_inst *inst)
 		return ret;
 
 	/*
+	 * SM8150 firmware requires encoder PERSIST memory in the secure
+	 * CP_NON_PIXEL domain even for a non-secure userspace session.  The
+	 * upstream Venus path has no secure allocator or context-bank device;
+	 * handing firmware a normal DMA address can hard-reset the platform
+	 * when LOAD_RESOURCES activates the encoder.  Fail before registering
+	 * any internal buffer until that complete contract is available.
+	 */
+	req = intbufs_find_req(&snapshot, HFI_BUFFER_INTERNAL_PERSIST);
+	if (req && req->size) {
+		dev_err(inst->core->dev,
+			"IRIS1 encoder requires secure CP_NON_PIXEL persist memory\n");
+		return -EOPNOTSUPP;
+	}
+
+	/*
 	 * Downstream calls this BUFFER_SIZE_MINIMUM; Venus names the same
 	 * 0x20100c two-u32 wire property BUFFER_SIZE_ACTUAL.  Tell firmware the
 	 * exact compressed CAPTURE extent before registering internal buffers.
