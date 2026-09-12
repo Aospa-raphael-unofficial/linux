@@ -6,8 +6,11 @@
 #include <linux/acpi.h>
 #include <linux/adreno-smmu-priv.h>
 #include <linux/delay.h>
+#include <linux/device.h>
+#include <dt-bindings/firmware/qcom,scm.h>
 #include <linux/of_device.h>
 #include <linux/firmware/qcom/qcom_scm.h>
+#include <linux/mm.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 
@@ -83,6 +86,244 @@ static const struct of_device_id qcom_smmu_actlr_client_of_match[] = {
 static struct qcom_smmu *to_qcom_smmu(struct arm_smmu_device *smmu)
 {
 	return container_of(smmu, struct qcom_smmu, smmu);
+}
+
+struct qcom_smmu_secure_pgtable {
+	struct list_head node;
+	void *addr;
+	size_t size;
+	bool assigned;
+	bool released;
+	bool busy;
+};
+
+struct qcom_smmu_secure_domain {
+	struct device *dev;
+	struct list_head pages;
+	struct mutex sync_lock; /* Serializes SCM ownership transitions */
+	spinlock_t pages_lock; /* Protects pages and their state */
+	u32 vmid;
+	bool poisoned;
+	bool ready_logged;
+};
+
+static void *qcom_smmu_secure_pgtable_alloc(void *cookie, size_t size, gfp_t gfp)
+{
+	struct arm_smmu_domain *smmu_domain = cookie;
+	struct qcom_smmu_secure_domain *secure = smmu_domain->impl_data;
+	struct qcom_smmu_secure_pgtable *page;
+	unsigned long flags;
+	size_t alloc_size = PAGE_ALIGN(size);
+
+	if (!secure || READ_ONCE(secure->poisoned))
+		return NULL;
+
+	page = kzalloc_obj(*page, gfp);
+	if (!page)
+		return NULL;
+
+	page->addr = alloc_pages_exact(alloc_size, gfp | __GFP_ZERO);
+	if (!page->addr) {
+		kfree(page);
+		return NULL;
+	}
+
+	page->size = alloc_size;
+	spin_lock_irqsave(&secure->pages_lock, flags);
+	list_add_tail(&page->node, &secure->pages);
+	spin_unlock_irqrestore(&secure->pages_lock, flags);
+
+	return page->addr;
+}
+
+static void qcom_smmu_secure_pgtable_free(void *cookie, void *addr, size_t size)
+{
+	struct arm_smmu_domain *smmu_domain = cookie;
+	struct qcom_smmu_secure_domain *secure = smmu_domain->impl_data;
+	struct qcom_smmu_secure_pgtable *page, *found = NULL;
+	unsigned long flags;
+	size_t alloc_size = 0;
+	bool free_now = false;
+	bool invalid_size = false;
+
+	if (!secure)
+		return;
+
+	spin_lock_irqsave(&secure->pages_lock, flags);
+	list_for_each_entry(page, &secure->pages, node) {
+		if (page->addr != addr)
+			continue;
+
+		found = page;
+		if (size > found->size) {
+			invalid_size = true;
+			break;
+		}
+
+		alloc_size = found->size;
+		found->released = true;
+		if (!found->assigned && !found->busy) {
+			list_del(&found->node);
+			free_now = true;
+		}
+		break;
+	}
+	spin_unlock_irqrestore(&secure->pages_lock, flags);
+
+	if (WARN_ON(!found || invalid_size))
+		return;
+
+	if (free_now) {
+		free_pages_exact(addr, alloc_size);
+		kfree(found);
+	}
+}
+
+static int
+qcom_smmu_secure_assign_pgtable(struct qcom_smmu_secure_domain *secure,
+				struct qcom_smmu_secure_pgtable *page)
+{
+	const struct qcom_scm_vmperm perms[] = {
+		{ QCOM_SCM_VMID_HLOS, QCOM_SCM_PERM_RW },
+		{ secure->vmid, QCOM_SCM_PERM_READ },
+	};
+	u64 src = BIT_ULL(QCOM_SCM_VMID_HLOS);
+
+	return qcom_scm_assign_mem(virt_to_phys(page->addr), page->size, &src,
+				   perms, ARRAY_SIZE(perms));
+}
+
+static int
+qcom_smmu_secure_unassign_pgtable(struct qcom_smmu_secure_domain *secure,
+				  struct qcom_smmu_secure_pgtable *page)
+{
+	const struct qcom_scm_vmperm perm = {
+		QCOM_SCM_VMID_HLOS, QCOM_SCM_PERM_RWX,
+	};
+	u64 src = BIT_ULL(QCOM_SCM_VMID_HLOS) | BIT_ULL(secure->vmid);
+
+	return qcom_scm_assign_mem(virt_to_phys(page->addr), page->size, &src,
+				   &perm, 1);
+}
+
+static int qcom_smmu_sync_secure_pgtable(struct arm_smmu_domain *smmu_domain)
+{
+	struct qcom_smmu_secure_domain *secure = smmu_domain->impl_data;
+	struct qcom_smmu_secure_pgtable *page, *candidate;
+	unsigned long flags;
+	bool free_only, unassign;
+	int ret = 0;
+
+	if (!secure)
+		return 0;
+
+	mutex_lock(&secure->sync_lock);
+	for (;;) {
+		candidate = NULL;
+		free_only = false;
+		unassign = false;
+
+		spin_lock_irqsave(&secure->pages_lock, flags);
+		list_for_each_entry(page, &secure->pages, node) {
+			if (page->busy)
+				continue;
+			if (page->released && !page->assigned) {
+				list_del(&page->node);
+				candidate = page;
+				free_only = true;
+				break;
+			}
+			if (page->released && page->assigned) {
+				page->busy = true;
+				candidate = page;
+				unassign = true;
+				break;
+			}
+			if (!secure->poisoned && !page->released &&
+			    !page->assigned) {
+				page->busy = true;
+				candidate = page;
+				break;
+			}
+		}
+		spin_unlock_irqrestore(&secure->pages_lock, flags);
+
+		if (!candidate)
+			break;
+
+		if (free_only) {
+			free_pages_exact(candidate->addr, candidate->size);
+			kfree(candidate);
+			continue;
+		}
+
+		if (unassign)
+			ret = qcom_smmu_secure_unassign_pgtable(secure, candidate);
+		else
+			ret = qcom_smmu_secure_assign_pgtable(secure, candidate);
+
+		spin_lock_irqsave(&secure->pages_lock, flags);
+		candidate->busy = false;
+		if (ret)
+			secure->poisoned = true;
+		else if (unassign)
+			list_del(&candidate->node);
+		else
+			candidate->assigned = true;
+		spin_unlock_irqrestore(&secure->pages_lock, flags);
+
+		if (ret) {
+			dev_err(secure->dev,
+				"failed to update secure page-table ownership: %d\n",
+				ret);
+			break;
+		}
+
+		if (unassign) {
+			free_pages_exact(candidate->addr, candidate->size);
+			kfree(candidate);
+		}
+	}
+
+	if (!ret && !secure->poisoned && !secure->ready_logged) {
+		dev_info(secure->dev,
+			 "QCOM_SMMU_SECURE_PGTABLE READY vmid=%u\n",
+			 secure->vmid);
+		secure->ready_logged = true;
+	}
+	mutex_unlock(&secure->sync_lock);
+
+	return ret ?: (READ_ONCE(secure->poisoned) ? -EIO : 0);
+}
+
+static void qcom_smmu_destroy_secure_context(struct arm_smmu_domain *smmu_domain)
+{
+	struct qcom_smmu_secure_domain *secure = smmu_domain->impl_data;
+	struct qcom_smmu_secure_pgtable *page;
+	unsigned long flags;
+	bool empty;
+
+	if (!secure)
+		return;
+
+	spin_lock_irqsave(&secure->pages_lock, flags);
+	list_for_each_entry(page, &secure->pages, node)
+		page->released = true;
+	spin_unlock_irqrestore(&secure->pages_lock, flags);
+
+	qcom_smmu_sync_secure_pgtable(smmu_domain);
+	spin_lock_irqsave(&secure->pages_lock, flags);
+	empty = list_empty(&secure->pages);
+	spin_unlock_irqrestore(&secure->pages_lock, flags);
+
+	smmu_domain->impl_data = NULL;
+	if (!empty) {
+		dev_err(secure->dev,
+			"leaking secure page tables after ownership rollback failure\n");
+		return;
+	}
+
+	kfree(secure);
 }
 
 static void qcom_smmu_tlb_sync(struct arm_smmu_device *smmu, int page,
@@ -434,8 +675,10 @@ static int qcom_smmu_init_context(struct arm_smmu_domain *smmu_domain,
 {
 	struct arm_smmu_device *smmu = smmu_domain->smmu;
 	struct qcom_smmu *qsmmu = to_qcom_smmu(smmu);
+	struct qcom_smmu_secure_domain *secure;
 	const struct of_device_id *client_match;
 	int cbndx = smmu_domain->cfg.cbndx;
+	u32 vmid;
 
 	smmu_domain->cfg.flush_walk_prefer_tlbiasid = true;
 
@@ -443,6 +686,28 @@ static int qcom_smmu_init_context(struct arm_smmu_domain *smmu_domain,
 
 	if (client_match)
 		qcom_smmu_set_actlr_dev(dev, smmu, cbndx, client_match);
+
+	if (device_property_read_u32(dev, "qcom,secure-vmid", &vmid))
+		return 0;
+
+	if (vmid != QCOM_SCM_VMID_CP_NON_PIXEL)
+		return -EINVAL;
+	if (!qcom_scm_is_available())
+		return -EPROBE_DEFER;
+
+	secure = kzalloc_obj(*secure);
+	if (!secure)
+		return -ENOMEM;
+
+	secure->dev = dev;
+	secure->vmid = vmid;
+	INIT_LIST_HEAD(&secure->pages);
+	mutex_init(&secure->sync_lock);
+	spin_lock_init(&secure->pages_lock);
+
+	smmu_domain->impl_data = secure;
+	pgtbl_cfg->alloc = qcom_smmu_secure_pgtable_alloc;
+	pgtbl_cfg->free = qcom_smmu_secure_pgtable_free;
 
 	return 0;
 }
@@ -609,6 +874,8 @@ static int qcom_sdm845_smmu500_reset(struct arm_smmu_device *smmu)
 
 static const struct arm_smmu_impl qcom_smmu_v2_impl = {
 	.init_context = qcom_smmu_init_context,
+	.sync_pgtable = qcom_smmu_sync_secure_pgtable,
+	.destroy_context = qcom_smmu_destroy_secure_context,
 	.cfg_probe = qcom_smmu_cfg_probe,
 	.def_domain_type = qcom_smmu_def_domain_type,
 	.write_s2cr = qcom_smmu_write_s2cr,
@@ -617,6 +884,8 @@ static const struct arm_smmu_impl qcom_smmu_v2_impl = {
 
 static const struct arm_smmu_impl qcom_smmu_500_impl = {
 	.init_context = qcom_smmu_init_context,
+	.sync_pgtable = qcom_smmu_sync_secure_pgtable,
+	.destroy_context = qcom_smmu_destroy_secure_context,
 	.cfg_probe = qcom_smmu_cfg_probe,
 	.def_domain_type = qcom_smmu_def_domain_type,
 	.reset = arm_mmu500_reset,
@@ -630,6 +899,8 @@ static const struct arm_smmu_impl qcom_smmu_500_impl = {
 
 static const struct arm_smmu_impl sdm845_smmu_500_impl = {
 	.init_context = qcom_smmu_init_context,
+	.sync_pgtable = qcom_smmu_sync_secure_pgtable,
+	.destroy_context = qcom_smmu_destroy_secure_context,
 	.cfg_probe = qcom_smmu_cfg_probe,
 	.def_domain_type = qcom_smmu_def_domain_type,
 	.reset = qcom_sdm845_smmu500_reset,
