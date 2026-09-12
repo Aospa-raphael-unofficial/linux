@@ -744,14 +744,16 @@ static int venc_set_properties(struct venus_inst *inst)
 		struct hfi_h264_db_control deblock;
 		struct hfi_h264_8x8_transform h264_transform;
 
-		ptype = HFI_PROPERTY_PARAM_VENC_H264_VUI_TIMING_INFO;
-		info.enable = 1;
-		info.fixed_framerate = 1;
-		info.time_scale = NSEC_PER_SEC;
+		if (!IS_IRIS1(inst->core)) {
+			ptype = HFI_PROPERTY_PARAM_VENC_H264_VUI_TIMING_INFO;
+			info.enable = 1;
+			info.fixed_framerate = 1;
+			info.time_scale = NSEC_PER_SEC;
 
-		ret = hfi_session_set_property(inst, ptype, &info);
-		if (ret)
-			return ret;
+			ret = hfi_session_set_property(inst, ptype, &info);
+			if (ret)
+				return ret;
+		}
 
 		ptype = HFI_PROPERTY_PARAM_VENC_H264_ENTROPY_CONTROL;
 		entropy.entropy_mode = venc_v4l2_to_hfi(
