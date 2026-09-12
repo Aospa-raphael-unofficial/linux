@@ -470,6 +470,17 @@ static int intbufs_alloc_iris1_encoder(struct venus_inst *inst)
 	if (ret)
 		return ret;
 
+	/*
+	 * Downstream calls this BUFFER_SIZE_MINIMUM; Venus names the same
+	 * 0x20100c two-u32 wire property BUFFER_SIZE_ACTUAL.  Tell firmware the
+	 * exact compressed CAPTURE extent before registering internal buffers.
+	 */
+	ret = venus_helper_set_bufsize(inst,
+				       inst->output_buf_size,
+				       HFI_BUFFER_OUTPUT);
+	if (ret)
+		return ret;
+
 	for (i = 0; i < ARRAY_SIZE(intbuf_types_4xx); i++) {
 		req = intbufs_find_req(&snapshot, intbuf_types_4xx[i]);
 		if (!req || !req->size)
