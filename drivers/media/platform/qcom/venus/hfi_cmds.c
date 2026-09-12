@@ -626,7 +626,10 @@ static int pkt_session_set_property_1x(struct hfi_session_set_property_pkt *pkt,
 			/* Profile not supported, falling back to high */
 			pl->profile = HFI_H264_PROFILE_HIGH;
 
-		if (!pl->level)
+		if (pl->level == ~0U)
+			/* Host-only IRIS1 H.264 auto-level marker. */
+			pl->level = 0;
+		else if (!pl->level)
 			/* Level not supported, falling back to 1 */
 			pl->level = 1;
 
