@@ -1089,6 +1089,26 @@ int venus_helper_set_profile_level(struct venus_inst *inst, u32 profile, u32 lev
 
 	hfi_id_profile_level(inst->hfi_codec, profile, level, &pl);
 
+	/*
+	 * SM8150 downstream leaves the default H.264 level unspecified so
+	 * firmware can choose a level which satisfies the active frame rate
+	 * and dimensions.  The generic Venus V4L2 control instead defaults to
+	 * Level 1.0.  Do not force that level on IRIS1 when the active stream
+	 * already exceeds Level 1's MaxFS/MaxMBPS constraints.
+	 */
+	if (IS_IRIS1(inst->core) &&
+	    inst->session_type == VIDC_SESSION_TYPE_ENC &&
+	    inst->hfi_codec == HFI_VIDEO_CODEC_H264 &&
+	    level == V4L2_MPEG_VIDEO_H264_LEVEL_1_0) {
+		u64 mbpf = (u64)DIV_ROUND_UP(inst->width, 16) *
+			   DIV_ROUND_UP(inst->height, 16);
+		u64 mbps = mbpf * inst->fps;
+
+		if (mbpf > 99 || mbps > 1485)
+			/* Host-only marker; packetization turns it into wire level 0. */
+			pl.level = ~0U;
+	}
+
 	return hfi_session_set_property(inst, ptype, &pl);
 }
 EXPORT_SYMBOL_GPL(venus_helper_set_profile_level);
