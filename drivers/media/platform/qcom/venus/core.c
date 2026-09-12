@@ -5,6 +5,7 @@
  */
 #include <linux/init.h>
 #include <linux/interconnect.h>
+#include <linux/iommu.h>
 #include <linux/io.h>
 #include <linux/ioctl.h>
 #include <linux/delay.h>
@@ -377,6 +378,45 @@ static int venus_add_dynamic_nodes(struct venus_core *core)
 static void venus_remove_dynamic_nodes(struct venus_core *core) {}
 #endif
 
+static int venus_get_secure_nonpixel_device(struct venus_core *core)
+{
+	struct device_node *np;
+	struct platform_device *pdev;
+
+	if (!IS_IRIS1(core))
+		return 0;
+
+	np = of_get_compatible_child(core->dev->of_node,
+				     "qcom,venus-secure-context");
+	if (!np) {
+		dev_warn(core->dev,
+			 "secure non-pixel context absent; IRIS1 encoder disabled\n");
+		return 0;
+	}
+
+	pdev = of_find_device_by_node(np);
+	of_node_put(np);
+	if (!pdev)
+		return -EPROBE_DEFER;
+
+	if (!iommu_get_domain_for_dev(&pdev->dev)) {
+		put_device(&pdev->dev);
+		return -EPROBE_DEFER;
+	}
+
+	core->secure_nonpixel_dev = &pdev->dev;
+	return 0;
+}
+
+static void venus_put_secure_nonpixel_device(struct venus_core *core)
+{
+	if (!core->secure_nonpixel_dev)
+		return;
+
+	put_device(core->secure_nonpixel_dev);
+	core->secure_nonpixel_dev = NULL;
+}
+
 static int venus_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -490,6 +530,10 @@ static int venus_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_remove_dynamic_nodes;
 
+	ret = venus_get_secure_nonpixel_device(core);
+	if (ret)
+		goto err_of_depopulate;
+
 	ret = venus_enumerate_codecs(core, VIDC_SESSION_TYPE_DEC);
 	if (ret)
 		goto err_of_depopulate;
@@ -509,6 +553,7 @@ static int venus_probe(struct platform_device *pdev)
 	return 0;
 
 err_of_depopulate:
+	venus_put_secure_nonpixel_device(core);
 	of_platform_depopulate(dev);
 err_remove_dynamic_nodes:
 	venus_remove_dynamic_nodes(core);
@@ -546,6 +591,7 @@ static void venus_remove(struct platform_device *pdev)
 	WARN_ON(ret);
 
 	venus_shutdown(core);
+	venus_put_secure_nonpixel_device(core);
 	of_platform_depopulate(dev);
 
 	venus_firmware_deinit(core);

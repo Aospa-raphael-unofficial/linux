@@ -759,6 +759,10 @@
 			iommu-addresses = <&venus 0 0 0 0x25800000>;
 		};
 
+		venus_secure_nonpixel_iova: venus-secure-nonpixel-iova {
+			iommu-addresses = <&venus_secure_nonpixel 0 0 0 0x1000000>;
+		};
+
 		venus_mem: memory@96e00000 {
 			reg = <0x0 0x96e00000 0x0 0x500000>;
 			no-map;
@@ -3823,6 +3827,11 @@
 			compatible = "qcom,sm8150-venus";
 			reg = <0 0x0aa00000 0 0x100000>;
 			interrupts = <GIC_SPI 174 IRQ_TYPE_LEVEL_HIGH>;
+			#address-cells = <2>;
+			#size-cells = <2>;
+			ranges;
+			dma-ranges = <0 0x01000000 0 0x01000000
+				      0 0x24800000>;
 
 			clocks = <&gcc GCC_VIDEO_AXIC_CLK>,
 				 <&gcc GCC_VIDEO_AXI0_CLK>,
@@ -3857,6 +3866,13 @@
 			memory-region-names = "firmware", "iova";
 
 			status = "disabled";
+
+			venus_secure_nonpixel: secure-non-pixel {
+				compatible = "qcom,venus-secure-context";
+				iommus = <&apps_smmu 0x2304 0x60>;
+				qcom,secure-vmid = <QCOM_SCM_VMID_CP_NON_PIXEL>;
+				memory-region = <&venus_secure_nonpixel_iova>;
+			};
 
 			venus_opp_table: opp-table {
 				compatible = "operating-points-v2";
