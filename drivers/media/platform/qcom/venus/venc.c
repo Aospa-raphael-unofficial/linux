@@ -1155,8 +1155,11 @@ static int venc_queue_setup_iris1(struct vb2_queue *q, unsigned int *num_buffers
 		size = max(size, venus_helper_get_framesz(inst->fmt_out->pixfmt,
 							  inst->out_width,
 							  inst->out_height));
-	else
-		size = max(size, inst->output_buf_size);
+	/*
+	 * SM8150 downstream treats the encoder compressed-output requirement
+	 * returned by firmware as authoritative. Do not inflate CAPTURE with
+	 * the generic compressed-frame heuristic used by other platforms.
+	 */
 
 	if (*num_planes) {
 		if (sizes[0] < size) {
