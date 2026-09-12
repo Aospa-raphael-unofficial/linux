@@ -9,5 +9,6 @@
 struct venus_inst;
 
 int venc_ctrl_init(struct venus_inst *inst);
+void venc_mark_config_dirty(struct venus_inst *inst);
 
 #endif
