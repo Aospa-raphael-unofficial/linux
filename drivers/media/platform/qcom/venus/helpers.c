@@ -3,12 +3,15 @@
  * Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
  * Copyright (C) 2017 Linaro Ltd.
  */
+#include <linux/firmware/qcom/qcom_scm.h>
 #include <linux/idr.h>
+#include <linux/iommu.h>
+#include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/sizes.h>
-#include <linux/kernel.h>
+#include <dt-bindings/firmware/qcom,scm.h>
 #include <media/videobuf2-dma-contig.h>
 #include <media/v4l2-mem2mem.h>
 #include <asm/div64.h>
@@ -34,10 +37,146 @@ struct intbuf {
 	size_t size;
 	void *va;
 	dma_addr_t da;
+	phys_addr_t pa;
+	struct device *dma_dev;
 	unsigned long attrs;
+	bool secure;
+	bool secure_alloc;
+	bool hfi_registered;
 	enum dpb_buf_owner owned_by;
 	u32 dpb_out_tag;
 };
+
+static int intbuf_secure_assign(struct intbuf *buf)
+{
+	const struct qcom_scm_vmperm perm = {
+		QCOM_SCM_VMID_CP_NON_PIXEL, QCOM_SCM_PERM_RW,
+	};
+	u64 src = BIT_ULL(QCOM_SCM_VMID_HLOS);
+	int ret;
+
+	ret = qcom_scm_assign_mem(buf->pa, buf->size, &src, &perm, 1);
+	if (!ret)
+		buf->secure = true;
+
+	return ret;
+}
+
+static int intbuf_secure_unassign(struct intbuf *buf)
+{
+	const struct qcom_scm_vmperm perm = {
+		QCOM_SCM_VMID_HLOS, QCOM_SCM_PERM_RWX,
+	};
+	u64 src = BIT_ULL(QCOM_SCM_VMID_CP_NON_PIXEL);
+	int ret;
+
+	if (!buf->secure)
+		return 0;
+
+	ret = qcom_scm_assign_mem(buf->pa, buf->size, &src, &perm, 1);
+	if (!ret)
+		buf->secure = false;
+
+	return ret;
+}
+
+static int intbuf_alloc_secure_persist(struct venus_inst *inst,
+				       struct intbuf *buf)
+{
+	struct venus_core *core = inst->core;
+	struct iommu_domain *domain;
+	phys_addr_t expected_pa;
+	u64 range_end, buffer_end;
+	size_t offset;
+	int ret;
+
+	if (!core->secure_nonpixel_dev)
+		return -EOPNOTSUPP;
+
+	buf->dma_dev = core->secure_nonpixel_dev;
+	domain = iommu_get_domain_for_dev(buf->dma_dev);
+	if (!domain)
+		return -ENODEV;
+
+	buf->attrs = DMA_ATTR_FORCE_CONTIGUOUS |
+		     DMA_ATTR_NO_KERNEL_MAPPING;
+	buf->va = dma_alloc_attrs(buf->dma_dev, buf->size, &buf->da,
+				  GFP_KERNEL | __GFP_ZERO, buf->attrs);
+	if (!buf->va)
+		return -ENOMEM;
+	buf->secure_alloc = true;
+
+	buf->pa = iommu_iova_to_phys(domain, buf->da);
+	if (!buf->pa || !IS_ALIGNED(buf->pa | buf->size, SZ_4K)) {
+		ret = -EINVAL;
+		goto free_dma;
+	}
+	for (offset = 0; offset < buf->size; offset += SZ_4K) {
+		expected_pa = buf->pa + offset;
+		if (iommu_iova_to_phys(domain, buf->da + offset) != expected_pa) {
+			dev_err(core->dev,
+				"secure encoder persist physical extent is not contiguous\n");
+			ret = -EINVAL;
+			goto free_dma;
+		}
+	}
+
+	range_end = (u64)core->res->cp_nonpixel_start +
+		    core->res->cp_nonpixel_size;
+	buffer_end = (u64)buf->da + buf->size;
+	if (buf->da < core->res->cp_nonpixel_start ||
+	    buffer_end > range_end || buffer_end < buf->da) {
+		dev_err(core->dev,
+			"secure encoder persist IOVA %pad is outside CP_NON_PIXEL\n",
+			&buf->da);
+		ret = -ERANGE;
+		goto free_dma;
+	}
+
+	ret = intbuf_secure_assign(buf);
+	if (ret)
+		goto free_dma;
+
+	dev_info(core->dev,
+		 "VENUS_SECURE_PERSIST ASSIGN iova=%pad size=%zu vmid=%u\n",
+		 &buf->da, buf->size, QCOM_SCM_VMID_CP_NON_PIXEL);
+
+	return 0;
+
+free_dma:
+	dma_free_attrs(buf->dma_dev, buf->size, buf->va, buf->da,
+		       buf->attrs);
+	buf->va = NULL;
+	buf->secure_alloc = false;
+	return ret;
+}
+
+static int intbuf_free_memory(struct venus_inst *inst, struct intbuf *buf)
+{
+	int ret;
+
+	if (buf->secure_alloc) {
+		ret = intbuf_secure_unassign(buf);
+		if (ret) {
+			dev_err(inst->core->dev,
+				"failed to reclaim secure encoder persist: %d\n",
+				ret);
+			return ret;
+		}
+
+		dev_info(inst->core->dev,
+			 "VENUS_SECURE_PERSIST RECLAIM iova=%pad size=%zu vmid=%u\n",
+			 &buf->da, buf->size, QCOM_SCM_VMID_CP_NON_PIXEL);
+		dma_free_attrs(buf->dma_dev, buf->size, buf->va, buf->da,
+			       buf->attrs);
+		buf->va = NULL;
+		buf->secure_alloc = false;
+		return 0;
+	}
+
+	dma_free_attrs(buf->dma_dev, buf->size, buf->va, buf->da, buf->attrs);
+	return 0;
+}
 
 bool venus_helper_check_codec(struct venus_inst *inst, u32 v4l2_pixfmt)
 {
@@ -239,6 +378,7 @@ static int intbufs_set_buffer_req(struct venus_inst *inst,
 	struct hfi_buffer_desc bd;
 	struct intbuf *buf;
 	u64 alloc_size = bufreq->size;
+	bool secure_persist;
 	unsigned int i;
 	int ret;
 
@@ -252,6 +392,10 @@ static int intbufs_set_buffer_req(struct venus_inst *inst,
 			return -EOVERFLOW;
 	}
 
+	secure_persist = IS_IRIS1(core) &&
+			 inst->session_type == VIDC_SESSION_TYPE_ENC &&
+			 bufreq->type == HFI_BUFFER_INTERNAL_PERSIST;
+
 	for (i = 0; i < bufreq->count_actual; i++) {
 		buf = kzalloc_obj(*buf);
 		if (!buf) {
@@ -261,13 +405,20 @@ static int intbufs_set_buffer_req(struct venus_inst *inst,
 
 		buf->type = bufreq->type;
 		buf->size = alloc_size;
-		buf->attrs = DMA_ATTR_WRITE_COMBINE |
-			     DMA_ATTR_NO_KERNEL_MAPPING;
-		buf->va = dma_alloc_attrs(dev, buf->size, &buf->da, GFP_KERNEL,
-					  buf->attrs);
-		if (!buf->va) {
-			ret = -ENOMEM;
-			goto fail;
+		buf->dma_dev = dev;
+		if (secure_persist) {
+			ret = intbuf_alloc_secure_persist(inst, buf);
+			if (ret)
+				goto fail;
+		} else {
+			buf->attrs = DMA_ATTR_WRITE_COMBINE |
+				     DMA_ATTR_NO_KERNEL_MAPPING;
+			buf->va = dma_alloc_attrs(dev, buf->size, &buf->da,
+						  GFP_KERNEL, buf->attrs);
+			if (!buf->va) {
+				ret = -ENOMEM;
+				goto fail;
+			}
 		}
 
 		memset(&bd, 0, sizeof(bd));
@@ -278,17 +429,23 @@ static int intbufs_set_buffer_req(struct venus_inst *inst,
 
 		ret = hfi_session_set_buffers(inst, &bd);
 		if (ret) {
+			int cleanup_ret;
+
 			dev_err(dev, "set session buffers failed\n");
-			goto dma_free;
+			cleanup_ret = intbuf_free_memory(inst, buf);
+			if (cleanup_ret) {
+				list_add_tail(&buf->list, &inst->internalbufs);
+				return cleanup_ret;
+			}
+			goto fail;
 		}
 
+		buf->hfi_registered = true;
 		list_add_tail(&buf->list, &inst->internalbufs);
 	}
 
 	return 0;
 
-dma_free:
-	dma_free_attrs(dev, buf->size, buf->va, buf->da, buf->attrs);
 fail:
 	kfree(buf);
 	return ret;
@@ -310,24 +467,35 @@ static int intbufs_unset_buffers(struct venus_inst *inst)
 {
 	struct hfi_buffer_desc bd = {0};
 	struct intbuf *buf, *n;
-	int ret = 0;
+	int ret, err = 0;
 
 	list_for_each_entry_safe(buf, n, &inst->internalbufs, list) {
-		bd.buffer_size = buf->size;
-		bd.buffer_type = buf->type;
-		bd.num_buffers = 1;
-		bd.device_addr = buf->da;
-		bd.response_required = true;
+		if (buf->hfi_registered) {
+			bd.buffer_size = buf->size;
+			bd.buffer_type = buf->type;
+			bd.num_buffers = 1;
+			bd.device_addr = buf->da;
+			bd.response_required = true;
 
-		ret = hfi_session_unset_buffers(inst, &bd);
+			ret = hfi_session_unset_buffers(inst, &bd);
+			if (ret) {
+				err = ret;
+				continue;
+			}
+			buf->hfi_registered = false;
+		}
+
+		ret = intbuf_free_memory(inst, buf);
+		if (ret) {
+			err = ret;
+			continue;
+		}
 
 		list_del_init(&buf->list);
-		dma_free_attrs(inst->core->dev, buf->size, buf->va, buf->da,
-			       buf->attrs);
 		kfree(buf);
 	}
 
-	return ret;
+	return err;
 }
 
 static const unsigned int intbuf_types_1xx[] = {
@@ -471,15 +639,13 @@ static int intbufs_alloc_iris1_encoder(struct venus_inst *inst)
 		return ret;
 
 	/*
-	 * SM8150 firmware requires encoder PERSIST memory in the secure
-	 * CP_NON_PIXEL domain even for a non-secure userspace session.  The
-	 * upstream Venus path has no secure allocator or context-bank device;
-	 * handing firmware a normal DMA address can hard-reset the platform
-	 * when LOAD_RESOURCES activates the encoder.  Fail before registering
-	 * any internal buffer until that complete contract is available.
+	 * Never fall back to the normal DMA domain for encoder PERSIST.
+	 * Firmware first activates this CP_NON_PIXEL resource during
+	 * LOAD_RESOURCES, where an address from the non-secure SID can hard
+	 * reset the platform.
 	 */
 	req = intbufs_find_req(&snapshot, HFI_BUFFER_INTERNAL_PERSIST);
-	if (req && req->size) {
+	if (req && req->size && !inst->core->secure_nonpixel_dev) {
 		dev_err(inst->core->dev,
 			"IRIS1 encoder requires secure CP_NON_PIXEL persist memory\n");
 		return -EOPNOTSUPP;
