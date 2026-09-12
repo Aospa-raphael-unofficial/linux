@@ -828,6 +828,12 @@ static int arm_smmu_init_domain_context(struct arm_smmu_domain *smmu_domain,
 		goto out_clear_smmu;
 	}
 
+	if (smmu->impl && smmu->impl->sync_pgtable) {
+		ret = smmu->impl->sync_pgtable(smmu_domain);
+		if (ret)
+			goto out_free_pgtbl;
+	}
+
 	/* Update the domain's page sizes to reflect the page table format */
 	domain->pgsize_bitmap = pgtbl_cfg.pgsize_bitmap;
 
@@ -874,7 +880,11 @@ static int arm_smmu_init_domain_context(struct arm_smmu_domain *smmu_domain,
 	smmu_domain->pgtbl_ops = pgtbl_ops;
 	return 0;
 
+out_free_pgtbl:
+	free_io_pgtable_ops(pgtbl_ops);
 out_clear_smmu:
+	if (smmu->impl && smmu->impl->destroy_context)
+		smmu->impl->destroy_context(smmu_domain);
 	__arm_smmu_free_bitmap(smmu->context_map, cfg->cbndx);
 	smmu_domain->smmu = NULL;
 out_unlock:
@@ -908,6 +918,10 @@ static void arm_smmu_destroy_domain_context(struct arm_smmu_domain *smmu_domain)
 	}
 
 	free_io_pgtable_ops(smmu_domain->pgtbl_ops);
+	if (smmu->impl && smmu->impl->sync_pgtable)
+		smmu->impl->sync_pgtable(smmu_domain);
+	if (smmu->impl && smmu->impl->destroy_context)
+		smmu->impl->destroy_context(smmu_domain);
 	__arm_smmu_free_bitmap(smmu->context_map, cfg->cbndx);
 
 	arm_smmu_rpm_put(smmu);
@@ -1269,13 +1283,18 @@ static int arm_smmu_map_pages(struct iommu_domain *domain, unsigned long iova,
 {
 	struct io_pgtable_ops *ops = to_smmu_domain(domain)->pgtbl_ops;
 	struct arm_smmu_device *smmu = to_smmu_domain(domain)->smmu;
-	int ret;
+	int ret, sync_ret;
 
 	if (!ops)
 		return -ENODEV;
 
 	arm_smmu_rpm_get(smmu);
 	ret = ops->map_pages(ops, iova, paddr, pgsize, pgcount, prot, gfp, mapped);
+	if (smmu->impl && smmu->impl->sync_pgtable) {
+		sync_ret = smmu->impl->sync_pgtable(to_smmu_domain(domain));
+		if (!ret)
+			ret = sync_ret;
+	}
 	arm_smmu_rpm_put(smmu);
 
 	return ret;
@@ -1309,6 +1328,11 @@ static void arm_smmu_flush_iotlb_all(struct iommu_domain *domain)
 		smmu_domain->flush_ops->tlb_flush_all(smmu_domain);
 		arm_smmu_rpm_put(smmu);
 	}
+
+	if (smmu->impl && smmu->impl->sync_pgtable &&
+	    smmu->impl->sync_pgtable(smmu_domain))
+		dev_err_ratelimited(smmu->dev,
+				    "failed to synchronize secure page tables\n");
 }
 
 static void arm_smmu_iotlb_sync(struct iommu_domain *domain,
@@ -1327,6 +1351,11 @@ static void arm_smmu_iotlb_sync(struct iommu_domain *domain,
 	else
 		arm_smmu_tlb_sync_global(smmu);
 	arm_smmu_rpm_put(smmu);
+
+	if (smmu->impl && smmu->impl->sync_pgtable &&
+	    smmu->impl->sync_pgtable(smmu_domain))
+		dev_err_ratelimited(smmu->dev,
+				    "failed to synchronize secure page tables\n");
 }
 
 static phys_addr_t arm_smmu_iova_to_phys_hard(struct iommu_domain *domain,
