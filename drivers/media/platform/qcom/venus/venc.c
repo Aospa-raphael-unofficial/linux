@@ -334,10 +334,11 @@ static int venc_g_fmt(struct file *file, void *fh, struct v4l2_format *f)
 
 	if (IS_IRIS1(inst->core) &&
 	    vb2_is_busy(v4l2_m2m_get_vq(inst->m2m_ctx, f->type))) {
-		u32 size = V4L2_TYPE_IS_OUTPUT(f->type) ? inst->input_buf_size :
-							      inst->output_buf_size;
-
-		pixmp->plane_fmt[0].sizeimage = max(pixmp->plane_fmt[0].sizeimage, size);
+		if (V4L2_TYPE_IS_OUTPUT(f->type))
+			pixmp->plane_fmt[0].sizeimage =
+				max(pixmp->plane_fmt[0].sizeimage, inst->input_buf_size);
+		else
+			pixmp->plane_fmt[0].sizeimage = inst->output_buf_size;
 	}
 
 	return 0;
