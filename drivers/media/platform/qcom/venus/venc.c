@@ -201,9 +201,17 @@ venc_try_fmt_common(struct venus_inst *inst, struct v4l2_format *f)
 			      frame_height_max(inst));
 
 	/*
-	 * Keep V4L2 dimensions visible.  Raw stride and scanline padding belong
-	 * in bytesperline/sizeimage and the HFI plane constraints; exposing the
-	 * padded height makes userspace copy past the end of a software frame.
+	 * Linear NV12 uses Venus scanline padding. With a single V4L2 plane,
+	 * generic userspace has no standard field for the Y-plane scanline count.
+	 * Expose the 32-line-aligned raw height so the UV plane starts where the
+	 * firmware expects it; this matches the Android-Q Venus contract.
+	 */
+	if (f->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE)
+		pixmp->height = ALIGN(pixmp->height, 32);
+
+	/*
+	 * Keep the visible width; horizontal padding remains in bytesperline.
+	 * Compressed CAPTURE dimensions stay at the visible coded size.
 	 */
 	pixmp->width = ALIGN(pixmp->width, 2);
 	pixmp->height = ALIGN(pixmp->height, 2);
