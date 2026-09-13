@@ -1206,7 +1206,16 @@ static int venc_queue_setup_iris1(struct vb2_queue *q, unsigned int *num_buffers
 	}
 
 	minimum = max(minimum, 4U);
-	if (existing < minimum)
+	/*
+	 * IRIS1 consumes one raw input at a time and advertises its required
+	 * queue depth through count_actual.  A large userspace default can
+	 * otherwise exhaust contiguous memory before STREAMON.  REQBUFS is a
+	 * negotiation, so return the firmware-backed depth for a new raw queue;
+	 * CAPTURE remains free to request extra buffers for delayed output.
+	 */
+	if (input && !existing)
+		*num_buffers = minimum;
+	else if (existing < minimum)
 		*num_buffers = max(*num_buffers, minimum - existing);
 
 	if (input)
