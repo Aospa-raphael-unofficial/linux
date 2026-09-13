@@ -200,13 +200,11 @@ venc_try_fmt_common(struct venus_inst *inst, struct v4l2_format *f)
 	pixmp->height = clamp(pixmp->height, frame_height_min(inst),
 			      frame_height_max(inst));
 
-	/* Raw input buffers use the Venus stride and scanline alignment. */
-	if (f->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
-		pixmp->width = ALIGN(pixmp->width, 128);
-		pixmp->height = ALIGN(pixmp->height, 32);
-	}
-
-	/* Keep the compressed CAPTURE size at the visible coded dimensions. */
+	/*
+	 * Keep V4L2 dimensions visible.  Raw stride and scanline padding belong
+	 * in bytesperline/sizeimage and the HFI plane constraints; exposing the
+	 * padded height makes userspace copy past the end of a software frame.
+	 */
 	pixmp->width = ALIGN(pixmp->width, 2);
 	pixmp->height = ALIGN(pixmp->height, 2);
 
@@ -1116,8 +1114,8 @@ static int venc_init_session(struct venus_inst *inst)
 	else if (ret)
 		return ret;
 
-	ret = venus_helper_set_stride(inst, inst->out_width,
-				      inst->out_height);
+	ret = venus_helper_set_stride(inst, ALIGN(inst->out_width, 128),
+				      ALIGN(inst->out_height, 32));
 	if (ret)
 		goto deinit;
 
@@ -1658,7 +1656,7 @@ static void venc_inst_init(struct venus_inst *inst)
 	inst->fmt_cap = &venc_formats[VENUS_FMT_H264];
 	inst->fmt_out = &venc_formats[VENUS_FMT_NV12];
 	inst->width = 1280;
-	inst->height = ALIGN(720, 32);
+	inst->height = 720;
 	inst->out_width = 1280;
 	inst->out_height = 720;
 	inst->fps = 15;
