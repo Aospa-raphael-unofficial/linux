@@ -1544,8 +1544,9 @@ static const struct vb2_ops venc_vb2_ops = {
 };
 
 static void venc_buf_done(struct venus_inst *inst, unsigned int buf_type,
-			  u32 tag, u32 bytesused, u32 data_offset, u32 flags,
-			  u32 hfi_flags, u64 timestamp_us)
+			  u32 tag, u32 packet_buffer, u32 bytesused,
+			  u32 data_offset, u32 flags, u32 hfi_flags,
+			  u64 timestamp_us)
 {
 	struct vb2_v4l2_buffer *vbuf;
 	struct vb2_buffer *vb;

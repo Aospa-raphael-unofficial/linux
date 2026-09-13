@@ -98,8 +98,9 @@ struct hfi_core_ops {
 
 struct hfi_inst_ops {
 	void (*buf_done)(struct venus_inst *inst, unsigned int buf_type,
-			 u32 tag, u32 bytesused, u32 data_offset, u32 flags,
-			 u32 hfi_flags, u64 timestamp_us);
+			 u32 tag, u32 packet_buffer, u32 bytesused,
+			 u32 data_offset, u32 flags, u32 hfi_flags,
+			 u64 timestamp_us);
 	void (*event_notify)(struct venus_inst *inst, u32 event,
 			     struct hfi_event_data *data);
 	void (*flush_done)(struct venus_inst *inst);

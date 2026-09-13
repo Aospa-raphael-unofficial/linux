@@ -14,12 +14,19 @@ struct venus_core;
 bool venus_helper_check_codec(struct venus_inst *inst, u32 v4l2_pixfmt);
 struct vb2_v4l2_buffer *venus_helper_find_buf(struct venus_inst *inst,
 					      unsigned int type, u32 idx);
+struct vb2_v4l2_buffer *venus_helper_find_buf_by_addr(struct venus_inst *inst,
+						      unsigned int type,
+						      dma_addr_t addr);
+void venus_helper_change_dpb_owner_by_addr(struct venus_inst *inst,
+					   unsigned int buf_type,
+					   dma_addr_t addr);
 void venus_helper_change_dpb_owner(struct venus_inst *inst,
 				   struct vb2_v4l2_buffer *vbuf, unsigned int type,
 				   unsigned int buf_type, u32 idx);
 void venus_helper_buffers_done(struct venus_inst *inst, unsigned int type,
 			       enum vb2_buffer_state state);
 int venus_helper_vb2_buf_init(struct vb2_buffer *vb);
+void venus_helper_vb2_buf_cleanup(struct vb2_buffer *vb);
 int venus_helper_vb2_buf_prepare(struct vb2_buffer *vb);
 void venus_helper_vb2_buf_queue(struct vb2_buffer *vb);
 void venus_helper_vb2_stop_streaming(struct vb2_queue *q);
@@ -41,6 +48,13 @@ int venus_helper_set_format_constraints(struct venus_inst *inst);
 int venus_helper_set_num_bufs(struct venus_inst *inst, unsigned int input_bufs,
 			      unsigned int output_bufs,
 			      unsigned int output2_bufs);
+int venus_helper_set_num_bufs_min_host(struct venus_inst *inst,
+				       unsigned int input_bufs,
+				       unsigned int input_min_host,
+				       unsigned int output_bufs,
+				       unsigned int output_min_host,
+				       unsigned int output2_bufs,
+				       unsigned int output2_min_host);
 int venus_helper_set_raw_format(struct venus_inst *inst, u32 hfi_format,
 				u32 buftype);
 int venus_helper_set_color_format(struct venus_inst *inst, u32 fmt);
@@ -51,6 +65,8 @@ int venus_helper_set_multistream(struct venus_inst *inst, bool out_en,
 unsigned int venus_helper_get_opb_size(struct venus_inst *inst);
 void venus_helper_acquire_buf_ref(struct vb2_v4l2_buffer *vbuf);
 void venus_helper_release_buf_ref(struct venus_inst *inst, unsigned int idx);
+void venus_helper_release_buf_ref_by_addr(struct venus_inst *inst,
+					  dma_addr_t addr);
 void venus_helper_init_instance(struct venus_inst *inst);
 int venus_helper_session_init(struct venus_inst *inst);
 int venus_helper_get_out_fmts(struct venus_inst *inst, u32 fmt, u32 *out_fmt,
