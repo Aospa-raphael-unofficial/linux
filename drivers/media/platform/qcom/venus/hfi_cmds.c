@@ -902,6 +902,7 @@ static int pkt_session_set_property_1x(struct hfi_session_set_property_pkt *pkt,
 		pkt->shdr.hdr.size += sizeof(u32) + sizeof(*en);
 		break;
 	}
+	case HFI_PROPERTY_PARAM_VENC_LOW_LATENCY_MODE:
 	case HFI_PROPERTY_PARAM_VENC_PRESERVE_TEXT_QUALITY: {
 		struct hfi_enable *in = pdata, *en = prop_data;
 
