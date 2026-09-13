@@ -730,6 +730,16 @@ static int venc_set_properties(struct venus_inst *inst)
 	if (ret)
 		return ret;
 
+	/* SM8150 downstream couples VP8 work mode 1 with low latency. */
+	if (IS_IRIS1(inst->core) && inst->hfi_codec == HFI_VIDEO_CODEC_VP8) {
+		en.enable = 1;
+		ret = hfi_session_set_property(inst,
+					       HFI_PROPERTY_PARAM_VENC_LOW_LATENCY_MODE,
+					       &en);
+		if (ret)
+			return ret;
+	}
+
 	ret = venc_set_work_route(inst);
 	if (ret)
 		return ret;
