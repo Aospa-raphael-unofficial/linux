@@ -1566,8 +1566,13 @@ static u32 venus_helper_get_work_mode(struct venus_inst *inst)
 			mode = VIDC_WORK_MODE_1;
 	} else {
 		num_mbs = (ALIGN(inst->out_height, 16) * ALIGN(inst->out_width, 16)) / 256;
-		if (inst->hfi_codec == HFI_VIDEO_CODEC_VP8 &&
-		    num_mbs <= NUM_MBS_4K)
+		if ((inst->hfi_codec == HFI_VIDEO_CODEC_VP8 &&
+		     num_mbs <= NUM_MBS_4K) ||
+		    (IS_IRIS1(inst->core) &&
+		     (inst->hfi_codec == HFI_VIDEO_CODEC_H264 ||
+		      inst->hfi_codec == HFI_VIDEO_CODEC_HEVC) &&
+		     inst->controls.enc.bitrate_mode ==
+			V4L2_MPEG_VIDEO_BITRATE_MODE_CBR))
 			mode = VIDC_WORK_MODE_1;
 	}
 
@@ -2162,24 +2167,54 @@ int venus_helper_vb2_start_streaming(struct venus_inst *inst)
 	int ret;
 
 	ret = venus_helper_intbufs_alloc(inst);
-	if (ret)
+	if (ret) {
+		if (IS_IRIS1(inst->core) &&
+		    inst->session_type == VIDC_SESSION_TYPE_ENC)
+			dev_err(inst->core->dev,
+				"IRIS1 encoder firmware-start stage=internal-buffers ret=%d\n",
+				ret);
 		return ret;
+	}
 
 	ret = session_register_bufs(inst);
-	if (ret)
+	if (ret) {
+		if (IS_IRIS1(inst->core) &&
+		    inst->session_type == VIDC_SESSION_TYPE_ENC)
+			dev_err(inst->core->dev,
+				"IRIS1 encoder firmware-start stage=register-buffers ret=%d\n",
+				ret);
 		goto err_bufs_free;
+	}
 
 	ret = venus_pm_load_scale(inst);
-	if (ret)
+	if (ret) {
+		if (IS_IRIS1(inst->core) &&
+		    inst->session_type == VIDC_SESSION_TYPE_ENC)
+			dev_err(inst->core->dev,
+				"IRIS1 encoder firmware-start stage=load-scale ret=%d\n",
+				ret);
 		goto err_unreg_bufs;
+	}
 
 	ret = hfi_session_load_res(inst);
-	if (ret)
+	if (ret) {
+		if (IS_IRIS1(inst->core) &&
+		    inst->session_type == VIDC_SESSION_TYPE_ENC)
+			dev_err(inst->core->dev,
+				"IRIS1 encoder firmware-start stage=load-resources ret=%d\n",
+				ret);
 		goto err_unreg_bufs;
+	}
 
 	ret = hfi_session_start(inst);
-	if (ret)
+	if (ret) {
+		if (IS_IRIS1(inst->core) &&
+		    inst->session_type == VIDC_SESSION_TYPE_ENC)
+			dev_err(inst->core->dev,
+				"IRIS1 encoder firmware-start stage=session-start ret=%d\n",
+				ret);
 		goto err_unload_res;
+	}
 
 	return 0;
 

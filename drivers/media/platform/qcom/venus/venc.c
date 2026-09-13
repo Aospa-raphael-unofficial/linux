@@ -707,6 +707,52 @@ static int venc_set_work_route(struct venus_inst *inst)
 	return hfi_session_set_property(inst, HFI_PROPERTY_PARAM_WORK_ROUTE, &wr);
 }
 
+static int venc_set_iris1_cbr_properties(struct venus_inst *inst)
+{
+	struct venc_controls *ctr = &inst->controls.enc;
+	struct hfi_enable enable = { .enable = 1 };
+	u64 mbs_per_sec;
+	u32 vbv_hrd_size;
+	int ret;
+
+	if (!IS_IRIS1(inst->core) ||
+	    (inst->hfi_codec != HFI_VIDEO_CODEC_H264 &&
+	     inst->hfi_codec != HFI_VIDEO_CODEC_HEVC) ||
+	    ctr->bitrate_mode != V4L2_MPEG_VIDEO_BITRATE_MODE_CBR)
+		return 0;
+
+	mbs_per_sec = (u64)DIV_ROUND_UP(inst->width, 16) *
+		      DIV_ROUND_UP(inst->height, 16) * inst->fps;
+	vbv_hrd_size = mbs_per_sec <= 108000 ? 500 : 1000;
+
+	ret = hfi_session_set_property(inst,
+				       HFI_PROPERTY_CONFIG_VENC_VBV_HRD_BUF_SIZE,
+				       &vbv_hrd_size);
+	if (ret) {
+		dev_err(inst->core->dev,
+			"IRIS1 CBR property vbv-hrd failed: %d\n", ret);
+		return ret;
+	}
+
+	ret = hfi_session_set_property(inst,
+				       HFI_PROPERTY_PARAM_VENC_LOW_LATENCY_MODE,
+				       &enable);
+	if (ret) {
+		dev_err(inst->core->dev,
+			"IRIS1 CBR property low-latency failed: %d\n", ret);
+		return ret;
+	}
+
+	ret = hfi_session_set_property(inst,
+				       HFI_PROPERTY_PARAM_VENC_BITRATE_SAVINGS,
+				       &enable);
+	if (ret)
+		dev_err(inst->core->dev,
+			"IRIS1 CBR property bitrate-savings failed: %d\n", ret);
+
+	return ret;
+}
+
 static int venc_set_properties(struct venus_inst *inst)
 {
 	struct venc_controls *ctr = &inst->controls.enc;
@@ -723,6 +769,10 @@ static int venc_set_properties(struct venus_inst *inst)
 	u32 ptype, rate_control, bitrate;
 	u32 profile, level;
 	int ret;
+
+	ret = venc_set_iris1_cbr_properties(inst);
+	if (ret)
+		return ret;
 
 	ret = venus_helper_set_work_mode(inst);
 	if (ret)
@@ -1445,6 +1495,7 @@ static int venc_verify_conf(struct venus_inst *inst)
 static int venc_start_streaming(struct vb2_queue *q, unsigned int count)
 {
 	struct venus_inst *inst = vb2_get_drv_priv(q);
+	const char *stage = "queue-sync";
 	int ret;
 
 	mutex_lock(&inst->lock);
@@ -1464,31 +1515,38 @@ static int venc_start_streaming(struct vb2_queue *q, unsigned int count)
 	inst->sequence_cap = 0;
 	inst->sequence_out = 0;
 
+	stage = "pm-get";
 	ret = venc_pm_get(inst);
 	if (ret)
 		goto error;
 
+	stage = "acquire-core";
 	ret = venus_pm_acquire_core(inst);
 	if (ret)
 		goto put_power;
 
+	stage = "pm-put-autosuspend";
 	ret = venc_pm_put(inst, true);
 	if (ret)
 		goto error;
 
+	stage = "properties";
 	ret = venc_set_properties_if_needed(inst);
 	if (ret)
 		goto error;
 
+	stage = "verify-buffer-contract";
 	ret = venc_verify_conf(inst);
 	if (ret)
 		goto error;
 
+	stage = "set-buffer-counts";
 	ret = venus_helper_set_num_bufs(inst, inst->num_input_bufs,
 					inst->num_output_bufs, 0);
 	if (ret)
 		goto error;
 
+	stage = "firmware-start";
 	ret = venus_helper_vb2_start_streaming(inst);
 	if (ret)
 		goto error;
@@ -1502,6 +1560,12 @@ static int venc_start_streaming(struct vb2_queue *q, unsigned int count)
 put_power:
 	venc_pm_put(inst, false);
 error:
+	if (IS_IRIS1(inst->core))
+		dev_err(inst->core->dev,
+			"IRIS1 encoder start failed stage=%s ret=%d codec=%#x size=%ux%u fps=%llu rc=%u buffers=%u/%u\n",
+			stage, ret, inst->hfi_codec, inst->width, inst->height,
+			inst->fps, inst->controls.enc.bitrate_mode,
+			inst->num_input_bufs, inst->num_output_bufs);
 	venus_helper_buffers_done(inst, q->type, VB2_BUF_STATE_QUEUED);
 	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE)
 		inst->streamon_out = 0;
