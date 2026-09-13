@@ -200,9 +200,13 @@ venc_try_fmt_common(struct venus_inst *inst, struct v4l2_format *f)
 	pixmp->height = clamp(pixmp->height, frame_height_min(inst),
 			      frame_height_max(inst));
 
-	pixmp->width = ALIGN(pixmp->width, 128);
-	pixmp->height = ALIGN(pixmp->height, 32);
+	/* Raw input buffers use the Venus stride and scanline alignment. */
+	if (f->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
+		pixmp->width = ALIGN(pixmp->width, 128);
+		pixmp->height = ALIGN(pixmp->height, 32);
+	}
 
+	/* Keep the compressed CAPTURE size at the visible coded dimensions. */
 	pixmp->width = ALIGN(pixmp->width, 2);
 	pixmp->height = ALIGN(pixmp->height, 2);
 
