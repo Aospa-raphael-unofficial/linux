@@ -343,6 +343,10 @@ struct venus_buffer {
 	struct list_head list;
 	dma_addr_t dma_addr;
 	u32 size;
+	void *extradata_va;
+	dma_addr_t extradata_dma_addr;
+	u32 extradata_size;
+	unsigned long extradata_attrs;
 	struct list_head reg_list;
 	u32 flags;
 	struct list_head ref_list;

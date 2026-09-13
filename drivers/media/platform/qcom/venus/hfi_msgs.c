@@ -135,6 +135,13 @@ static void event_seq_changed(struct venus_core *core, struct venus_inst *inst,
 			event.input_crop.height = crop->height;
 			size_read = sizeof(struct hfi_extradata_input_crop);
 			break;
+		case HFI_PROPERTY_PARAM_VDEC_DPB_COUNTS_4XX:
+			if (ver != HFI_VERSION_4XX ||
+			    rem_bytes < sizeof(struct hfi_dpb_counts_4xx))
+				goto error;
+
+			size_read = sizeof(struct hfi_dpb_counts_4xx);
+			break;
 		case HFI_PROPERTY_PARAM_VDEC_DPB_COUNTS:
 			if (rem_bytes < sizeof(struct hfi_dpb_counts))
 				goto error;
@@ -543,7 +550,8 @@ static void hfi_session_etb_done(struct venus_core *core,
 
 	inst->error = pkt->error_type;
 	inst->ops->buf_done(inst, HFI_BUFFER_INPUT, pkt->input_tag,
-			    pkt->filled_len, pkt->offset, 0, 0, 0);
+			    pkt->packet_buffer, pkt->filled_len, pkt->offset,
+			    0, 0, 0);
 }
 
 static void hfi_session_ftb_done(struct venus_core *core,
@@ -555,6 +563,7 @@ static void hfi_session_ftb_done(struct venus_core *core,
 	unsigned int error;
 	u32 flags = 0, hfi_flags = 0, offset = 0, filled_len = 0;
 	u32 pic_type = 0, buffer_type = 0, output_tag = -1;
+	u32 packet_buffer = 0;
 
 	if (session_type == VIDC_SESSION_TYPE_ENC) {
 		struct hfi_msg_session_fbd_compressed_pkt *pkt = packet;
@@ -566,6 +575,7 @@ static void hfi_session_ftb_done(struct venus_core *core,
 		filled_len = pkt->filled_len;
 		pic_type = pkt->picture_type;
 		output_tag = pkt->output_tag;
+		packet_buffer = pkt->packet_buffer;
 		buffer_type = HFI_BUFFER_OUTPUT;
 
 		error = pkt->error_type;
@@ -580,6 +590,7 @@ static void hfi_session_ftb_done(struct venus_core *core,
 		filled_len = pkt->filled_len;
 		pic_type = pkt->picture_type;
 		output_tag = pkt->output_tag;
+		packet_buffer = pkt->packet_buffer;
 
 		if (pkt->stream_id == 0)
 			buffer_type = HFI_BUFFER_OUTPUT;
@@ -623,8 +634,8 @@ static void hfi_session_ftb_done(struct venus_core *core,
 
 done:
 	inst->error = error;
-	inst->ops->buf_done(inst, buffer_type, output_tag, filled_len,
-			    offset, flags, hfi_flags, timestamp_us);
+	inst->ops->buf_done(inst, buffer_type, output_tag, packet_buffer,
+			    filled_len, offset, flags, hfi_flags, timestamp_us);
 }
 
 static void hfi_session_start_done(struct venus_core *core,
