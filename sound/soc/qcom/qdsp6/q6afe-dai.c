@@ -41,6 +41,7 @@ static int q6slim_hw_params(struct snd_pcm_substream *substream,
 
 	struct q6afe_dai_data *dai_data = dev_get_drvdata(dai->dev);
 	struct q6afe_slim_cfg *slim = &dai_data->port_config[dai->id].slim;
+	int channels = params_channels(params);
 
 	slim->sample_rate = params_rate(params);
 
@@ -59,6 +60,14 @@ static int q6slim_hw_params(struct snd_pcm_substream *substream,
 		pr_err("%s: format %d\n",
 			__func__, params_format(params));
 		return -EINVAL;
+	}
+
+	/* If num_channels is not already set by set_channel_map,
+	 * set it from hw_params channels count
+	 */
+	if (slim->num_channels == 0 && channels > 0) {
+		slim->num_channels = channels;
+		dev_dbg(dai->dev, "q6slim_hw_params: setting num_channels=%d from hw_params\n", channels);
 	}
 
 	return 0;
@@ -390,6 +399,8 @@ static int q6afe_dai_prepare(struct snd_pcm_substream *substream,
 	struct q6afe_dai_data *dai_data = dev_get_drvdata(dai->dev);
 	int rc;
 
+	dev_dbg(dai->dev, "q6afe_dai_prepare: dai_id=0x%x stream=%d\n", dai->id, substream->stream);
+
 	if (dai_data->is_port_started[dai->id]) {
 		/* stop the port and restart with new port config */
 		rc = q6afe_port_stop(dai_data->port[dai->id]);
@@ -406,6 +417,10 @@ static int q6afe_dai_prepare(struct snd_pcm_substream *substream,
 					&dai_data->port_config[dai->id].hdmi);
 		break;
 	case SLIMBUS_0_RX ... SLIMBUS_6_TX:
+		dev_dbg(dai->dev, "SLIM prepare: num_channels=%d ch_map[0]=%d ch_map[1]=%d\n",
+			 dai_data->port_config[dai->id].slim.num_channels,
+			 dai_data->port_config[dai->id].slim.ch_mapping[0],
+			 dai_data->port_config[dai->id].slim.ch_mapping[1]);
 		q6afe_slim_port_prepare(dai_data->port[dai->id],
 					&dai_data->port_config[dai->id].slim);
 		break;
@@ -456,6 +471,9 @@ static int q6slim_set_channel_map(struct snd_soc_dai *dai,
 	struct q6afe_port_config *pcfg = &dai_data->port_config[dai->id];
 	int i;
 
+	dev_dbg(dai->dev, "q6slim_set_channel_map: dai_id=0x%x tx_num=%u rx_num=%u caller=%pS\n",
+		 dai->id, tx_num, rx_num, __builtin_return_address(0));
+
 	if (dai->id & 0x1) {
 		/* TX */
 		if (!tx_slot) {
@@ -468,7 +486,10 @@ static int q6slim_set_channel_map(struct snd_soc_dai *dai,
 
 		pcfg->slim.num_channels = tx_num;
 
-
+		dev_dbg(dai->dev, "TX channels: %u [", tx_num);
+		for (i = 0; i < tx_num; i++)
+			dev_dbg(dai->dev, "%u ", tx_slot[i]);
+		dev_dbg(dai->dev, "]\n");
 	} else {
 		if (!rx_slot) {
 			pr_err("%s: rx slot not found\n", __func__);
@@ -480,6 +501,10 @@ static int q6slim_set_channel_map(struct snd_soc_dai *dai,
 
 		pcfg->slim.num_channels = rx_num;
 
+		dev_dbg(dai->dev, "RX channels: %u [", rx_num);
+		for (i = 0; i < rx_num; i++)
+			dev_dbg(dai->dev, "%u ", rx_slot[i]);
+		dev_dbg(dai->dev, "]\n");
 	}
 
 	return 0;
