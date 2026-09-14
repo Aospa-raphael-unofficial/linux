@@ -158,7 +158,7 @@ static void goodix_gtx8_touch_handler(struct goodix_gtx8_core *cd, u8 touch_num,
 				  GOODIX_GTX8_CHECKSUM_SIZE;
 			if (!goodix_gtx8_checksum_valid_normandy(
 				    cd->event_buffer, len)) {
-				dev_err(cd->dev,
+				dev_dbg(cd->dev,
 					"touch data checksum error: %*ph\n",
 					len, cd->event_buffer);
 				return;
@@ -168,7 +168,7 @@ static void goodix_gtx8_touch_handler(struct goodix_gtx8_core *cd, u8 touch_num,
 				  GOODIX_GTX8_CHECKSUM_SIZE;
 			if (!goodix_gtx8_checksum_valid_yellowstone(
 				    (u8 *)touch_data, len)) {
-				dev_err(cd->dev,
+				dev_dbg(cd->dev,
 					"touch data checksum error: %*ph\n",
 					len, (u8 *)touch_data);
 				return;
