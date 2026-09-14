@@ -524,17 +524,27 @@ int qrtr_endpoint_post(struct qrtr_endpoint *ep, const void *data, size_t len)
 		qrtr_tx_resume(node, skb);
 	} else {
 		ipc = qrtr_port_lookup(cb->dst_port);
+		/*
+		 * No local socket / full receive queue is not a malformed
+		 * packet. Returning -EINVAL makes qcom_smd_qrtr spam
+		 * "invalid ipcrouter packet" for normal ADSP/modem traffic
+		 * before userspace binds. Drop quietly instead.
+		 */
 		if (!ipc)
-			goto err;
+			goto drop;
 
 		if (sock_queue_rcv_skb(&ipc->sk, skb)) {
 			qrtr_port_put(ipc);
-			goto err;
+			goto drop;
 		}
 
 		qrtr_port_put(ipc);
 	}
 
+	return 0;
+
+drop:
+	kfree_skb(skb);
 	return 0;
 
 err:

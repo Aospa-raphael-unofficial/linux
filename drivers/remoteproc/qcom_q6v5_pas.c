@@ -26,6 +26,7 @@
 #include <linux/soc/qcom/mdt_loader.h>
 #include <linux/soc/qcom/smem.h>
 #include <linux/soc/qcom/smem_state.h>
+#include <soc/qcom/rpmhpd.h>
 
 #include "qcom_common.h"
 #include "qcom_pil_info.h"
@@ -269,6 +270,24 @@ static int qcom_pas_map_carveout(struct rproc *rproc, phys_addr_t mem_phys, size
 	return ret;
 }
 
+static int qcom_pas_wait_rpmhpd_sync(struct qcom_pas *pas)
+{
+	int ret;
+
+	if (!pas->proxy_pd_count)
+		return 0;
+
+	if (qcom_rpmhpd_is_synced())
+		return 0;
+
+	dev_dbg(pas->dev, "waiting for rpmhpd sync_state before modem RF power\n");
+	ret = qcom_rpmhpd_wait_sync(120000);
+	if (ret)
+		dev_err(pas->dev, "rpmhpd sync_state not ready (%d), defer modem start\n", ret);
+
+	return ret;
+}
+
 static int qcom_pas_start(struct rproc *rproc)
 {
 	struct qcom_pas *pas = rproc->priv;
@@ -277,6 +296,12 @@ static int qcom_pas_start(struct rproc *rproc)
 	ret = qcom_q6v5_prepare(&pas->q6v5);
 	if (ret)
 		return ret;
+
+	ret = qcom_pas_wait_rpmhpd_sync(pas);
+	if (ret) {
+		qcom_q6v5_unprepare(&pas->q6v5);
+		return ret;
+	}
 
 	ret = qcom_pas_pds_enable(pas, pas->proxy_pds, pas->proxy_pd_count);
 	if (ret < 0)
@@ -399,11 +424,14 @@ static int qcom_pas_stop(struct rproc *rproc)
 	int handover;
 	int ret;
 
+	pr_emerg("SSRDBG: qcom_pas_stop ENTER, before request_stop\n");
 	ret = qcom_q6v5_request_stop(&pas->q6v5, pas->sysmon);
 	if (ret == -ETIMEDOUT)
 		dev_err(pas->dev, "timed out on wait\n");
+	pr_emerg("SSRDBG: qcom_pas_stop after request_stop ret=%d, before scm_pas_shutdown\n", ret);
 
 	ret = qcom_scm_pas_shutdown(pas->pas_id);
+	pr_emerg("SSRDBG: qcom_pas_stop after scm_pas_shutdown ret=%d\n", ret);
 	if (ret && pas->decrypt_shutdown)
 		ret = qcom_pas_shutdown_poll_decrypt(pas);
 
@@ -420,6 +448,7 @@ static int qcom_pas_stop(struct rproc *rproc)
 
 	qcom_pas_unmap_carveout(rproc, pas->mem_phys, pas->mem_size);
 
+	pr_emerg("SSRDBG: qcom_pas_stop before unprepare/handover\n");
 	handover = qcom_q6v5_unprepare(&pas->q6v5);
 	if (handover)
 		qcom_pas_handover(&pas->q6v5);
@@ -427,6 +456,7 @@ static int qcom_pas_stop(struct rproc *rproc)
 	if (pas->smem_host_id)
 		ret = qcom_smem_bust_hwspin_lock_by_host(pas->smem_host_id);
 
+	pr_emerg("SSRDBG: qcom_pas_stop EXIT\n");
 	return ret;
 }
 

@@ -1115,8 +1115,11 @@ static void rproc_stop_subdevices(struct rproc *rproc, bool crashed)
 	struct rproc_subdev *subdev;
 
 	list_for_each_entry_reverse(subdev, &rproc->subdevs, node) {
-		if (subdev->stop)
+		if (subdev->stop) {
+			pr_emerg("SSRDBG: subdev->stop %ps ENTER\n", subdev->stop);
 			subdev->stop(subdev, crashed);
+			pr_emerg("SSRDBG: subdev->stop %ps EXIT\n", subdev->stop);
+		}
 	}
 }
 
@@ -1703,8 +1706,10 @@ static int rproc_stop(struct rproc *rproc, bool crashed)
 	if (!rproc->ops->stop)
 		return -EINVAL;
 
+	pr_emerg("SSRDBG: rproc_stop ENTER, before stop_subdevices\n");
 	/* Stop any subdevices for the remote processor */
 	rproc_stop_subdevices(rproc, crashed);
+	pr_emerg("SSRDBG: rproc_stop after stop_subdevices\n");
 
 	/* the installed resource table is no longer accessible */
 	ret = rproc_reset_rsc_table_on_stop(rproc);
@@ -1713,13 +1718,14 @@ static int rproc_stop(struct rproc *rproc, bool crashed)
 		return ret;
 	}
 
-
+	pr_emerg("SSRDBG: rproc_stop before ops->stop\n");
 	/* power off the remote processor */
 	ret = rproc->ops->stop(rproc);
 	if (ret) {
 		dev_err(dev, "can't stop rproc: %d\n", ret);
 		return ret;
 	}
+	pr_emerg("SSRDBG: rproc_stop after ops->stop\n");
 
 	rproc_unprepare_subdevices(rproc);
 

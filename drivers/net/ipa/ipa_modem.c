@@ -56,6 +56,11 @@ static int ipa_open(struct net_device *netdev)
 	struct device *dev;
 	int ret;
 
+	if (!priv->tx || !priv->rx) {
+		dev_err(ipa->dev, "modem endpoints not configured\n");
+		return -ENODEV;
+	}
+
 	dev = ipa->dev;
 	ret = pm_runtime_get_sync(dev);
 	if (ret < 0)
@@ -403,31 +408,37 @@ static void ipa_modem_crashed(struct ipa *ipa)
 		goto out_power_put;
 	}
 
+	pr_emerg("SSRDBG: ipa_modem_crashed ENTER\n");
 	ipa_endpoint_modem_pause_all(ipa, true);
 
 	ipa_endpoint_modem_hol_block_clear_all(ipa);
 
+	pr_emerg("SSRDBG: ipa before table_reset\n");
 	ipa_table_reset(ipa, true);
 
+	pr_emerg("SSRDBG: ipa before hash_flush\n");
 	ret = ipa_table_hash_flush(ipa);
 	if (ret)
 		dev_err(dev, "error %d flushing hash caches\n", ret);
 
+	pr_emerg("SSRDBG: ipa before exception_reset\n");
 	ret = ipa_endpoint_modem_exception_reset_all(ipa);
 	if (ret)
 		dev_err(dev, "error %d resetting exception endpoint\n", ret);
 
 	ipa_endpoint_modem_pause_all(ipa, false);
 
+	pr_emerg("SSRDBG: ipa before modem_stop\n");
 	ret = ipa_modem_stop(ipa);
 	if (ret)
 		dev_err(dev, "error %d stopping modem\n", ret);
 
-	/* Now prepare for the next modem boot */
+	pr_emerg("SSRDBG: ipa before mem_zero_modem\n");
 	ret = ipa_mem_zero_modem(ipa);
 	if (ret)
 		dev_err(dev, "error %d zeroing modem memory regions\n", ret);
 
+	pr_emerg("SSRDBG: ipa_modem_crashed EXIT\n");
 out_power_put:
 	(void)pm_runtime_put_autosuspend(dev);
 }

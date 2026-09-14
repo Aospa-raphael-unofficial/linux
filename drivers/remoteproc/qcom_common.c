@@ -479,8 +479,10 @@ static void ssr_notify_stop(struct rproc_subdev *subdev, bool crashed)
 		.crashed = crashed,
 	};
 
+	pr_emerg("SSRDBG: ssr_notify_stop ENTER (%s)\n", ssr->info->name);
 	srcu_notifier_call_chain(&ssr->info->notifier_list,
 				 QCOM_SSR_BEFORE_SHUTDOWN, &data);
+	pr_emerg("SSRDBG: ssr_notify_stop EXIT (%s)\n", ssr->info->name);
 }
 
 static void ssr_notify_unprepare(struct rproc_subdev *subdev)
