@@ -419,18 +419,26 @@ static bool gdsc_get_hwmode(struct generic_pm_domain *domain, struct device *dev
 	return !!(val & HW_CONTROL_MASK);
 }
 
+static bool gdsc_hwctrl_active(struct gdsc *sc)
+{
+	u32 val;
+	int ret;
+
+	if (!(sc->flags & HW_CTRL))
+		return false;
+
+	ret = regmap_read(sc->regmap, sc->gdscr, &val);
+	if (ret)
+		return false;
+
+	return !!(val & HW_CONTROL_MASK);
+}
+
 static int gdsc_init(struct gdsc *sc)
 {
 	u32 mask, val;
 	int on, ret;
-
-	/*
-	 * Disable HW trigger: collapse/restore occur based on registers writes.
-	 * Disable SW override: Use hardware state-machine for sequencing.
-	 * Configure wait time between states.
-	 */
-	mask = HW_CONTROL_MASK | SW_OVERRIDE_MASK |
-	       EN_REST_WAIT_MASK | EN_FEW_WAIT_MASK | CLK_DIS_WAIT_MASK;
+	bool preserve = gdsc_hwctrl_active(sc);
 
 	if (!sc->en_rest_wait_val)
 		sc->en_rest_wait_val = EN_REST_WAIT_VAL;
@@ -443,12 +451,30 @@ static int gdsc_init(struct gdsc *sc)
 		sc->en_few_wait_val << EN_FEW_WAIT_SHIFT |
 		sc->clk_dis_wait_val << CLK_DIS_WAIT_SHIFT;
 
+	/*
+	 * Bootloader may leave a GDSC on with HW trigger enabled while MDP
+	 * scans a continuous splash framebuffer.  Clearing HW_CONTROL here
+	 * glitches live scanout.  Only touch wait-state fields in that case.
+	 */
+	if (preserve) {
+		mask = EN_REST_WAIT_MASK | EN_FEW_WAIT_MASK | CLK_DIS_WAIT_MASK;
+	} else {
+		/*
+		 * Disable HW trigger: collapse/restore occur based on
+		 * registers writes.  Disable SW override: Use hardware
+		 * state-machine for sequencing.  Configure wait time
+		 * between states.
+		 */
+		mask = HW_CONTROL_MASK | SW_OVERRIDE_MASK |
+		       EN_REST_WAIT_MASK | EN_FEW_WAIT_MASK | CLK_DIS_WAIT_MASK;
+	}
+
 	ret = regmap_update_bits(sc->regmap, sc->gdscr, mask, val);
 	if (ret)
 		return ret;
 
 	/* Force gdsc ON if only ON state is supported */
-	if (sc->pwrsts == PWRSTS_ON) {
+	if (sc->pwrsts == PWRSTS_ON && !preserve) {
 		ret = gdsc_toggle_logic(sc, GDSC_ON, false);
 		if (ret)
 			return ret;
@@ -485,7 +511,7 @@ static int gdsc_init(struct gdsc *sc)
 			gdsc_retain_ff_on(sc);
 
 		/* Turn on HW trigger mode if supported */
-		if (sc->flags & HW_CTRL) {
+		if (sc->flags & HW_CTRL && !preserve) {
 			ret = gdsc_hwctrl(sc, true);
 			if (ret < 0)
 				goto err_disable_supply;

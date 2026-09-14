@@ -11,6 +11,7 @@
 #include <linux/irqchip.h>
 #include <linux/irqdesc.h>
 #include <linux/irqchip/chained_irq.h>
+#include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -21,6 +22,10 @@
 #include "msm_kms.h"
 
 #include <generated/mdss.xml.h>
+
+#if IS_ENABLED(CONFIG_SM_DISPCC_8250)
+int disp_cc_sm8250_boot_display_handoff(void);
+#endif
 
 #define MIN_IB_BW	400000000UL /* Min ib vote 400MB */
 
@@ -233,6 +238,10 @@ static int msm_mdss_enable(struct msm_mdss *msm_mdss)
 	int ret, i;
 	u32 hw_rev;
 
+#if IS_ENABLED(CONFIG_SM_DISPCC_8250)
+	disp_cc_sm8250_boot_display_handoff();
+#endif
+
 	/*
 	 * Several components have AXI clocks that can only be turned on if
 	 * the interconnect is enabled (non-zero bandwidth). Let's make sure
@@ -332,6 +341,26 @@ static int msm_mdss_reset(struct device *dev)
 	return 0;
 }
 
+static bool mdss_boot_display_on(struct device *dev)
+{
+	struct device_node *np;
+
+	if (of_property_read_bool(dev->of_node, "qcom,boot-display-on"))
+		return true;
+
+	np = of_find_compatible_node(NULL, NULL, "qcom,sm8150-dispcc");
+	if (!np)
+		return false;
+
+	if (of_property_read_bool(np, "qcom,boot-display-on")) {
+		of_node_put(np);
+		return true;
+	}
+
+	of_node_put(np);
+	return false;
+}
+
 /*
  * MDP5 MDSS uses at most three specified clocks.
  */
@@ -369,9 +398,13 @@ static struct msm_mdss *msm_mdss_init(struct platform_device *pdev, bool is_mdp5
 	int ret;
 	int irq;
 
-	ret = msm_mdss_reset(&pdev->dev);
-	if (ret)
-		return ERR_PTR(ret);
+	if (mdss_boot_display_on(&pdev->dev)) {
+		dev_info(&pdev->dev, "preserving bootloader MDP state (qcom,boot-display-on)\n");
+	} else {
+		ret = msm_mdss_reset(&pdev->dev);
+		if (ret)
+			return ERR_PTR(ret);
+	}
 
 	msm_mdss = devm_kzalloc(&pdev->dev, sizeof(*msm_mdss), GFP_KERNEL);
 	if (!msm_mdss)
