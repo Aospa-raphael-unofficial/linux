@@ -14,6 +14,7 @@
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
+#include <linux/regulator/driver.h>
 #include <linux/reset.h>
 #include <linux/slab.h>
 
@@ -136,6 +137,10 @@ struct qcom_snps_hsphy {
 	bool phy_initialized;
 	enum phy_mode mode;
 	struct phy_override_seq update_seq_cfg[NUM_HSPHY_TUNING_PARAMS];
+
+	/* dpdm regulator: when enabled by charger, PHY releases D+/D- lines */
+	struct regulator *dpdm_reg;
+	bool dpdm_enabled;
 };
 
 static int qcom_snps_hsphy_clk_init(struct qcom_snps_hsphy *hsphy)
@@ -147,10 +152,6 @@ static int qcom_snps_hsphy_clk_init(struct qcom_snps_hsphy *hsphy)
 	if (!hsphy->clks)
 		return -ENOMEM;
 
-	/*
-	 * TODO: Currently no device tree instantiation of the PHY is using the clock.
-	 * This needs to be fixed in order for this code to be able to use devm_clk_bulk_get().
-	 */
 	hsphy->clks[0].id = "cfg_ahb";
 	hsphy->clks[0].clk = devm_clk_get_optional(dev, "cfg_ahb");
 	if (IS_ERR(hsphy->clks[0].clk))
@@ -161,7 +162,7 @@ static int qcom_snps_hsphy_clk_init(struct qcom_snps_hsphy *hsphy)
 	hsphy->clks[1].clk = devm_clk_get(dev, "ref");
 	if (IS_ERR(hsphy->clks[1].clk))
 		return dev_err_probe(dev, PTR_ERR(hsphy->clks[1].clk),
-				     "failed to get ref clk\n");
+				     "failed to ref clk\n");
 
 	return 0;
 }
@@ -179,6 +180,92 @@ static inline void qcom_snps_hsphy_write_mask(void __iomem *base, u32 offset,
 	/* Ensure above write is completed */
 	readl_relaxed(base + offset);
 }
+
+/*
+ * dpdm regulator: charger enables this to request PHY release D+/D- lines
+ * so PMIC can do APSD/QC negotiation directly via D+/D-.
+ * When enabled: PHY enters non-driving mode (SIDDQ=0 so analog stays powered).
+ * When disabled: PHY returns to normal operation.
+ */
+static int qcom_snps_hsphy_dpdm_enable(struct regulator_dev *rdev)
+{
+	struct qcom_snps_hsphy *hsphy = rdev_get_drvdata(rdev);
+	int ret;
+
+	dev_info(hsphy->dev, "dpdm: ENABLE — releasing D+/D- to PMIC charger\n");
+
+	/* Enable clocks and deassert reset so PHY register writes take effect.
+	 * These are refcounted, so it's safe to call even if already enabled.
+	 */
+	ret = clk_bulk_prepare_enable(hsphy->num_clks, hsphy->clks);
+	if (ret) {
+		dev_err(hsphy->dev, "dpdm: failed to enable clks: %d\n", ret);
+		return ret;
+	}
+	ret = reset_control_deassert(hsphy->phy_reset);
+	if (ret) {
+		dev_err(hsphy->dev, "dpdm: failed to deassert reset: %d\n", ret);
+		clk_bulk_disable_unprepare(hsphy->num_clks, hsphy->clks);
+		return ret;
+	}
+
+	/* Put PHY in non-driving mode: stop driving D+/D- but keep
+	 * analog powered (SIDDQ=0) so ESD diodes don't clamp the lines.
+	 * PMIC charger APSD/QC module can then read/write D+/D- directly.
+	 */
+	qcom_snps_hsphy_write_mask(hsphy->base, USB2_PHY_USB_PHY_CFG0,
+				   UTMI_PHY_DATAPATH_CTRL_OVERRIDE_EN,
+				   UTMI_PHY_DATAPATH_CTRL_OVERRIDE_EN);
+	qcom_snps_hsphy_write_mask(hsphy->base, USB2_PHY_USB_PHY_UTMI_CTRL0,
+				   OPMODE_MASK | TERMSEL,
+				   OPMODE_NONDRIVING);
+	qcom_snps_hsphy_write_mask(hsphy->base, USB2_PHY_USB_PHY_UTMI_CTRL1,
+				   XCVRSEL, 0);
+
+	hsphy->dpdm_enabled = true;
+	/* Do NOT disable clocks — the non-driving mode setting must
+	 * persist for PMIC APSD/QC to work on charger hot-plug.
+	 */
+	return 0;
+}
+
+static int qcom_snps_hsphy_dpdm_disable(struct regulator_dev *rdev)
+{
+	struct qcom_snps_hsphy *hsphy = rdev_get_drvdata(rdev);
+
+	if (!hsphy->dpdm_enabled)
+		return 0;
+
+	dev_info(hsphy->dev, "dpdm: reclaiming D+/D- back to PHY\n");
+
+	/* Restore PHY to normal operation */
+	qcom_snps_hsphy_write_mask(hsphy->base,
+				   USB2_PHY_USB_PHY_HS_PHY_CTRL_COMMON0,
+				   SIDDQ, 0);
+	qcom_snps_hsphy_write_mask(hsphy->base, USB2_PHY_USB_PHY_UTMI_CTRL1,
+				   XCVRSEL, XCVRSEL);
+	qcom_snps_hsphy_write_mask(hsphy->base, USB2_PHY_USB_PHY_UTMI_CTRL0,
+				   OPMODE_MASK | TERMSEL,
+				   OPMODE_NORMAL | TERMSEL);
+	qcom_snps_hsphy_write_mask(hsphy->base, USB2_PHY_USB_PHY_CFG0,
+				   UTMI_PHY_DATAPATH_CTRL_OVERRIDE_EN, 0);
+
+	hsphy->dpdm_enabled = false;
+	return 0;
+}
+
+static const struct regulator_ops qcom_snps_hsphy_dpdm_ops = {
+	.enable = qcom_snps_hsphy_dpdm_enable,
+	.disable = qcom_snps_hsphy_dpdm_disable,
+};
+
+static const struct regulator_desc qcom_snps_hsphy_dpdm_desc = {
+	.name = "dpdm",
+	.of_match = "qcom,dpdm-regulator",
+	.ops = &qcom_snps_hsphy_dpdm_ops,
+	.type = REGULATOR_VOLTAGE,
+	.owner = THIS_MODULE,
+};
 
 static int qcom_snps_hsphy_suspend(struct qcom_snps_hsphy *hsphy)
 {
@@ -466,6 +553,22 @@ static int qcom_snps_hsphy_init(struct phy *phy)
 
 	hsphy->phy_initialized = true;
 
+	/* If dpdm regulator is enabled (charger has D+/D- control),
+	 * re-apply non-driving mode so PMIC can continue APSD/QC.
+	 * PHY init restored normal driving mode which blocks PMIC.
+	 */
+	if (hsphy->dpdm_enabled) {
+		dev_info(hsphy->dev, "dpdm: re-applying non-driving mode after PHY init\n");
+		qcom_snps_hsphy_write_mask(hsphy->base, USB2_PHY_USB_PHY_CFG0,
+					   UTMI_PHY_DATAPATH_CTRL_OVERRIDE_EN,
+					   UTMI_PHY_DATAPATH_CTRL_OVERRIDE_EN);
+		qcom_snps_hsphy_write_mask(hsphy->base, USB2_PHY_USB_PHY_UTMI_CTRL0,
+					   OPMODE_MASK | TERMSEL,
+					   OPMODE_NONDRIVING);
+		qcom_snps_hsphy_write_mask(hsphy->base, USB2_PHY_USB_PHY_UTMI_CTRL1,
+					   XCVRSEL, 0);
+	}
+
 	return 0;
 
 disable_clks:
@@ -618,6 +721,30 @@ static int qcom_snps_hsphy_probe(struct platform_device *pdev)
 	dev_set_drvdata(dev, hsphy);
 	phy_set_drvdata(generic_phy, hsphy);
 	qcom_snps_hsphy_read_override_param_seq(dev);
+
+	/* Register dpdm regulator so charger driver can request D+/D- control */
+	{
+		struct regulator_config cfg = {
+			.dev = dev,
+			.driver_data = hsphy,
+		};
+		struct regulator_dev *rdev;
+
+		rdev = devm_regulator_register(dev, &qcom_snps_hsphy_dpdm_desc, &cfg);
+		if (IS_ERR(rdev)) {
+			ret = PTR_ERR(rdev);
+			dev_err(dev, "failed to register dpdm regulator, %d\n", ret);
+			return ret;
+		}
+		dev_info(dev, "Registered dpdm regulator for charger D+/D- control\n");
+
+		/* Immediately release D+/D- lines to PMIC for APSD/QC.
+		 * The charger driver will later claim the dpdm regulator,
+		 * but we need D+/D- released as early as possible so that
+		 * PMIC autonomous APSD can detect charger type at boot.
+		 */
+		qcom_snps_hsphy_dpdm_enable(rdev);
+	}
 
 	phy_provider = devm_of_phy_provider_register(dev, of_phy_simple_xlate);
 	if (!IS_ERR(phy_provider))

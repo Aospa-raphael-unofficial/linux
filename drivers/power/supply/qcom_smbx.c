@@ -9,17 +9,24 @@
  */
 
 #include <linux/bits.h>
+#include <linux/delay.h>
 #include <linux/devm-helpers.h>
 #include <linux/iio/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/minmax.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
+#include <linux/notifier.h>
+#include <linux/of.h>
+#include <linux/regulator/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/pm_wakeirq.h>
-#include <linux/of.h>
 #include <linux/power_supply.h>
+#include <linux/property.h>
 #include <linux/regmap.h>
+#include <linux/slab.h>
+#include <linux/string.h>
 #include <linux/types.h>
 #include <linux/workqueue.h>
 
@@ -82,6 +89,7 @@ enum smb_generation {
 
 #define APSD_STATUS					0x307
 #define APSD_DTC_STATUS_DONE_BIT			BIT(0)
+#define QC_CHARGER_BIT					BIT(1)
 
 #define APSD_RESULT_STATUS				0x308
 #define APSD_RESULT_STATUS_MASK				GENMASK(6, 0)
@@ -90,6 +98,8 @@ enum smb_generation {
 #define CDP_CHARGER_BIT					BIT(2)
 #define OCP_CHARGER_BIT					BIT(1)
 #define SDP_CHARGER_BIT					BIT(0)
+#define QC_3P0_BIT					BIT(6)
+#define QC_2P0_BIT					BIT(5)
 
 #define USBIN_CMD_IL					0x340
 #define USBIN_SUSPEND_BIT				BIT(0)
@@ -103,14 +113,37 @@ enum smb_generation {
 #define TYPE_C_CFG					0x358
 #define APSD_START_ON_CC_BIT				BIT(7)
 #define FACTORY_MODE_DETECTION_EN_BIT			BIT(5)
+#define TYPE_C_OR_U_USB_BIT				BIT(0)
 #define VCONN_OC_CFG_BIT				BIT(1)
 
+#define USBIN_ADAPTER_ALLOW_CFG				0x360
+#define USBIN_ADAPTER_ALLOW_OVERRIDE			0x344
+#define ADAPTER_ALLOW_FORCE_NULL			0
+#define ADAPTER_ALLOW_FORCE_5V				BIT(0)
+#define ADAPTER_ALLOW_FORCE_9V				BIT(1)
+#define ADAPTER_ALLOW_CONTINUOUS			BIT(3)
 #define USBIN_OPTIONS_1_CFG				0x362
-#define AUTO_SRC_DETECT_BIT				BIT(3)
+#define BC1P2_SRC_DETECT_BIT				BIT(3)
 #define HVDCP_EN_BIT					BIT(2)
+#define HVDCP_AUTH_ALG_EN_CFG_BIT			BIT(6)
+#define HVDCP_AUTONOMOUS_MODE_EN_CFG_BIT		BIT(5)
+#define CMD_HVDCP_2_REG				0x343
+#define SINGLE_INCREMENT_BIT				BIT(0)
+#define SINGLE_DECREMENT_BIT				BIT(1)
+#define FORCE_5V_BIT					BIT(3)
+#define FORCE_9V_BIT					BIT(4)
+#define FORCE_12V_BIT					BIT(5)
+#define TYPEC_U_USB_CFG_REG				0x570
+#define EN_MICRO_USB_FACTORY_MODE_BIT			BIT(1)
+#define EN_MICRO_USB_MODE_BIT				BIT(0)
+#define QC_CHANGE_STATUS_REG				0x309
+#define QC_5V_BIT					BIT(0)
+#define QC_9V_BIT					BIT(1)
 
-#define USBIN_LOAD_CFG					0x65
+#define USBIN_LOAD_CFG					0x365
 #define ICL_OVERRIDE_AFTER_APSD_BIT			BIT(4)
+#define USBIN_VOLTAGE_LSB_REG				0x347
+/* Each LSB = 25uV for USBIN voltage ADC */
 
 #define USBIN_ICL_OPTIONS				0x366
 #define USB51_MODE_BIT					BIT(1)
@@ -192,10 +225,29 @@ enum smb_generation {
 #define STAT_CFG					0x690
 #define STAT_SW_OVERRIDE_CFG_BIT			BIT(6)
 
+/*
+ * PM8150B MISC (absolute 0x16xx) accessed as charger@1000 + offset.
+ * MISC_SMB_CFG @ 0x1690 shares the same relative offset as SMB2 STAT_CFG.
+ */
+#define MISC_SMB_EN_CMD					0x648
+#define EN_CP_CMD_BIT					BIT(0)
+#define SMB_EN_OVERRIDE_BIT				BIT(3)
+#define SMB_EN_OVERRIDE_VALUE_BIT			BIT(4)
+#define EN_STAT_CMD_BIT					BIT(2)
+
+#define MISC_SMB_CFG					0x690
+#define SMB_EN_SEL_BIT					BIT(4)
+
 #define SDP_CURRENT_UA					500000
 #define CDP_CURRENT_UA					1500000
 #define DCP_CURRENT_UA					1500000
 #define CURRENT_MAX_UA					DCP_CURRENT_UA
+/* Align with Android Raphael qcom,usb-icl-ua */
+#define USB_ICL_MAX_UA					2800000
+/* Android qcom,fcc-max-ua when charge pump is active */
+#define FCC_CP_MAX_UA					5100000
+/* Enable SMB1390 when negotiated Vbus is at least 9V */
+#define CP_MIN_VBUS_UV					8000000
 
 /* pmi8998 registers represent current in increments of 1/40th of an amp */
 #define CURRENT_SCALE_FACTOR				25000
@@ -231,6 +283,13 @@ struct smb_init_register {
  * @usb_in_i_chan:	USB_IN current measurement channel
  * @usb_in_v_chan:	USB_IN voltage measurement channel
  * @chg_psy:		Charger power supply instance
+ * @cp_psy:		Optional SMB1390 charge-pump supply
+ * @nb:			Notifier for TCPM / charge-pump psy changes
+ * @lock:		Protects ICL/FCC/CP coordination
+ * @pd_icl_ua:		Negotiated PD input current (0 = use APSD)
+ * @pd_vbus_uv:		Negotiated PD voltage
+ * @cp_enabled:		Charge-pump path currently requested
+ * @cp_ramp_step:		Current ramp-up step for CP ILIM
  */
 struct smb_chip {
 	struct device *dev;
@@ -248,6 +307,22 @@ struct smb_chip {
 	struct iio_channel *usb_in_v_chan;
 
 	struct power_supply *chg_psy;
+	struct power_supply *cp_psy;
+	struct notifier_block nb;
+	struct mutex lock;
+
+	unsigned int pd_icl_ua;
+	unsigned int pd_vbus_uv;
+	bool cp_enabled;
+	int cp_ramp_step;
+	bool hvdcp_detected;
+	bool qc_negotiated;
+	bool apsd_rerun_done;
+	int apsd_retry_count;
+	int qc3_wait_count;
+	struct regulator *dpdm_reg;
+	bool dpdm_enabled;
+	bool is_qc3;
 };
 
 struct smb_match_data {
@@ -307,7 +382,7 @@ static int smb_apsd_get_charger_type(struct smb_chip *chip, int *val)
 		return rc;
 	}
 	if (!(apsd_stat & APSD_DTC_STATUS_DONE_BIT)) {
-		dev_dbg(chip->dev, "Apsd not ready");
+		pr_info("smb: APSD not ready, stat=0x%02x\n", apsd_stat);
 		return -EAGAIN;
 	}
 
@@ -318,12 +393,51 @@ static int smb_apsd_get_charger_type(struct smb_chip *chip, int *val)
 	}
 
 	stat &= APSD_RESULT_STATUS_MASK;
+	pr_info("smb: APSD done, result=0x%02x\n", stat);
 
-	if (stat & CDP_CHARGER_BIT)
-		*val = POWER_SUPPLY_USB_TYPE_CDP;
-	else if (stat & (DCP_CHARGER_BIT | OCP_CHARGER_BIT | FLOAT_CHARGER_BIT))
+	/* Debug: read APSD_STATUS for QC_CHARGER_BIT */
+	regmap_read(chip->regmap, chip->base + APSD_STATUS, &apsd_stat);
+	pr_info("smb: APSD_STATUS=0x%02x\n", apsd_stat);
+	regmap_read(chip->regmap, chip->base + 0x358, &apsd_stat);
+	pr_info("smb: TYPE_C_CFG=0x%02x\n", apsd_stat);
+	regmap_read(chip->regmap, chip->base + 0x362, &apsd_stat);
+	pr_info("smb: USBIN_OPTIONS_1_CFG=0x%02x\n", apsd_stat);
+	regmap_read(chip->regmap, chip->base + 0x570, &apsd_stat);
+	pr_info("smb: TYPEC_U_USB_CFG(sid3)=0x%02x\n", apsd_stat);
+
+	/* Debug: read sid3 Type-C status registers (offset = abs - 0x1000) */
+	{
+		unsigned int val;
+		/* TYPE_C_MISC_STATUS (0x150B) - CC status */
+		regmap_read(chip->regmap, chip->base + 0x50B, &val);
+		pr_info("smb: TYPE_C_MISC_STATUS=0x%02x\n", val);
+		/* TYPEC_U_USB_STATUS (0x150F) - uUSB D+/D- status */
+		regmap_read(chip->regmap, chip->base + 0x50F, &val);
+		pr_info("smb: TYPEC_U_USB_STATUS=0x%02x\n", val);
+		/* TYPE_C_MODE_CFG (0x1544) - port mode */
+		regmap_read(chip->regmap, chip->base + 0x544, &val);
+		pr_info("smb: TYPE_C_MODE_CFG=0x%02x\n", val);
+		/* USBIN_ADAPTER_ALLOW_OVERRIDE (0x1344) */
+		regmap_read(chip->regmap, chip->base + 0x344, &val);
+		pr_info("smb: ADAPTER_ALLOW_OVERRIDE=0x%02x\n", val);
+	}
+
+	/* Check for HVDCP/QC chargers first (per vendor driver logic) */
+	if (stat & QC_3P0_BIT) {
+		pr_info("smb: QC3.0 charger detected\n");
 		*val = POWER_SUPPLY_USB_TYPE_DCP;
-	else /* SDP_CHARGER_BIT (or others) */
+		chip->hvdcp_detected = true;
+		chip->is_qc3 = true;
+	} else if (stat & QC_2P0_BIT) {
+		pr_info("smb: QC2.0 charger detected\n");
+		*val = POWER_SUPPLY_USB_TYPE_DCP;
+		chip->hvdcp_detected = true;
+		chip->is_qc3 = false;
+	} else if (stat & CDP_CHARGER_BIT) {
+		*val = POWER_SUPPLY_USB_TYPE_CDP;
+	} else if (stat & (DCP_CHARGER_BIT | OCP_CHARGER_BIT | FLOAT_CHARGER_BIT)) {
+		*val = POWER_SUPPLY_USB_TYPE_DCP;
+	} else /* SDP_CHARGER_BIT (or others) */
 		*val = POWER_SUPPLY_USB_TYPE_SDP;
 
 	return 0;
@@ -433,74 +547,678 @@ static int smb_set_current_limit(struct smb_chip *chip, unsigned int val)
 			    val_raw);
 }
 
-static void smb_status_change_work(struct work_struct *work)
+static int smb_set_fcc(struct smb_chip *chip, unsigned int ua)
+{
+	if (ua > FCC_CP_MAX_UA)
+		ua = FCC_CP_MAX_UA;
+
+	return regmap_write(chip->regmap, chip->base + FAST_CHARGE_CURRENT_CFG,
+			    ua / CURRENT_SCALE_FACTOR);
+}
+
+static unsigned int smb_default_fcc_ua(struct smb_chip *chip)
+{
+	int ua = chip->batt_info->constant_charge_current_max_ua;
+
+	if (ua <= 0 || ua == -EINVAL)
+		return 1950000;
+
+	return ua;
+}
+
+static int smb_cp_hw_enable(struct smb_chip *chip, bool enable)
+{
+	int rc;
+
+	if (chip->gen != SMB5)
+		return 0;
+
+	if (enable) {
+		/* Select SMB_EN output from charge pump logic */
+		rc = regmap_update_bits(chip->regmap, chip->base + MISC_SMB_CFG,
+					SMB_EN_SEL_BIT, SMB_EN_SEL_BIT);
+		if (rc)
+			return rc;
+
+		/* Enable SMB_EN: clear override so CP can auto-control it.
+		 * Also send EN_CP_CMD to start the charge pump.
+		 */
+		rc = regmap_update_bits(chip->regmap,
+					chip->base + MISC_SMB_EN_CMD,
+					SMB_EN_OVERRIDE_BIT | EN_CP_CMD_BIT,
+					EN_CP_CMD_BIT);
+		if (rc)
+			return rc;
+
+		dev_info(chip->dev, "SMB_EN enabled (SMB_EN_SEL + EN_CP_CMD)\n");
+		return 0;
+	}
+
+	/* Disable: set override to force SMB_EN low, then clear EN_CP_CMD */
+	rc = regmap_update_bits(chip->regmap, chip->base + MISC_SMB_EN_CMD,
+				SMB_EN_OVERRIDE_BIT | EN_CP_CMD_BIT,
+				SMB_EN_OVERRIDE_BIT);
+	if (rc)
+		return rc;
+
+	rc = regmap_update_bits(chip->regmap, chip->base + MISC_SMB_CFG,
+				  SMB_EN_SEL_BIT, 0);
+	if (rc)
+		return rc;
+
+	dev_info(chip->dev, "SMB_EN disabled\n");
+	return 0;
+}
+
+static void smb_resolve_cp_psy(struct smb_chip *chip)
+{
+	if (chip->cp_psy)
+		return;
+
+	chip->cp_psy = power_supply_get_by_reference(dev_fwnode(chip->dev),
+						     "qcom,charge-pump");
+	if (IS_ERR(chip->cp_psy))
+		chip->cp_psy = NULL;
+
+	if (!chip->cp_psy)
+		chip->cp_psy = power_supply_get_by_name("smb1390-charger");
+}
+
+static void smb_notify_cp(struct smb_chip *chip, bool enable, unsigned int icl_ua)
+{
+	union power_supply_propval val;
+	int rc;
+
+	smb_resolve_cp_psy(chip);
+	if (!chip->cp_psy)
+		return;
+
+	if (enable && icl_ua) {
+		val.intval = icl_ua;
+		rc = power_supply_set_property(chip->cp_psy,
+					       POWER_SUPPLY_PROP_CURRENT_MAX,
+					       &val);
+		if (rc)
+			dev_dbg(chip->dev, "CP CURRENT_MAX set failed: %d\n",
+				rc);
+	}
+
+	val.intval = enable;
+	rc = power_supply_set_property(chip->cp_psy, POWER_SUPPLY_PROP_ONLINE,
+				       &val);
+	if (rc)
+		dev_dbg(chip->dev, "CP ONLINE set failed: %d\n", rc);
+
+	power_supply_changed(chip->cp_psy);
+}
+
+static void smb_update_charge_pump(struct smb_chip *chip, unsigned int icl_ua)
+{
+	bool want_cp;
+	unsigned int fcc_ua, vbus_uv;
+	int rc;
+
+	/* Read VBUS via IIO channel. The IIO channel returns values
+	 * in µV but with a ~2x underestimate (hardware ADC scaling).
+	 * Use VOLTAGE_NOW property (which applies *16 correction) as
+	 * the reliable source instead.
+	 */
+	{
+		union power_supply_propval pval;
+
+		if (chip->chg_psy &&
+		    power_supply_get_property(chip->chg_psy,
+				POWER_SUPPLY_PROP_VOLTAGE_NOW, &pval) >= 0 &&
+		    pval.intval > 0)
+			vbus_uv = pval.intval;
+		else
+			vbus_uv = 0;
+	}
+
+	want_cp = chip->gen == SMB5 && vbus_uv >= CP_MIN_VBUS_UV &&
+		  icl_ua >= 900000 && chip->qc_negotiated;
+
+	dev_info(chip->dev,
+		 "CP check: vbus=%u pd_vbus=%u icl=%u want_cp=%d cp_enabled=%d gen=%d\n",
+		 vbus_uv, chip->pd_vbus_uv, icl_ua, want_cp, chip->cp_enabled,
+		 chip->gen);
+
+	if (want_cp == chip->cp_enabled && !want_cp)
+		return;
+
+	if (want_cp) {
+		/* Ramp up CP ILIM in steps to avoid VBUS collapse:
+		 * Step 0: 1.5A (initial enable, safe for QC3.0)
+		 * Step 1: 2.0A (after 2s stable)
+		 * Step 2: 2.8A (full speed after 4s stable)
+		 */
+		unsigned int cp_ilim;
+		unsigned int cp_ramp_steps[] = {1500000, 2000000};
+		unsigned int target_ilim = min_t(unsigned int, icl_ua, 2800000);
+
+		if (!chip->cp_enabled) {
+			/* First enable: start at low ILIM */
+			cp_ilim = cp_ramp_steps[0];
+			chip->cp_ramp_step = 0;
+		} else if (chip->cp_ramp_step < ARRAY_SIZE(cp_ramp_steps)) {
+			cp_ilim = cp_ramp_steps[chip->cp_ramp_step];
+		} else {
+			cp_ilim = target_ilim;
+		}
+
+		rc = smb_cp_hw_enable(chip, true);
+		if (rc) {
+			dev_err(chip->dev, "Failed to enable SMB_EN: %d\n", rc);
+			return;
+		}
+
+		fcc_ua = min_t(unsigned int, cp_ilim * 2, FCC_CP_MAX_UA);
+		smb_set_fcc(chip, fcc_ua);
+		smb_notify_cp(chip, true, cp_ilim);
+		chip->cp_enabled = true;
+
+		/* Schedule ramp-up if not at target yet */
+		if (cp_ilim < target_ilim) {
+			chip->cp_ramp_step++;
+			schedule_delayed_work(&chip->status_change_work,
+					      msecs_to_jiffies(2000));
+		}
+
+		dev_info(chip->dev,
+			 "Charge pump requested (Vbus=%u uV ICL=%u uA CP_ILIM=%u uA FCC=%u uA ramp=%d)\n",
+			 vbus_uv, icl_ua, cp_ilim, fcc_ua, chip->cp_ramp_step);
+	} else if (chip->cp_enabled) {
+		smb_notify_cp(chip, false, 0);
+		smb_cp_hw_enable(chip, false);
+		smb_set_fcc(chip, smb_default_fcc_ua(chip));
+		chip->cp_enabled = false;
+		chip->cp_ramp_step = 0;
+		dev_info(chip->dev, "Charge pump disabled\n");
+	}
+}
+
+static unsigned int smb_apsd_icl_ua(struct smb_chip *chip, unsigned int type)
+{
+	switch (type) {
+	case POWER_SUPPLY_USB_TYPE_CDP:
+		return CDP_CURRENT_UA;
+	case POWER_SUPPLY_USB_TYPE_DCP:
+		return min_t(unsigned int,
+			     chip->batt_info->constant_charge_current_max_ua,
+			     USB_ICL_MAX_UA);
+	case POWER_SUPPLY_USB_TYPE_SDP:
+	default:
+		return SDP_CURRENT_UA;
+	}
+}
+
+static void smb_apply_input_limits(struct smb_chip *chip)
 {
 	unsigned int charger_type, current_ua;
 	int usb_online = 0;
 	int count, rc;
+
+	mutex_lock(&chip->lock);
+
+	pr_info("smb: apply_input_limits, pd_icl_ua=%u\n", chip->pd_icl_ua);
+	smb_get_prop_usb_online(chip, &usb_online);
+	if (!usb_online) {
+		chip->pd_icl_ua = 0;
+		chip->pd_vbus_uv = 0;
+		smb_update_charge_pump(chip, 0);
+		/* Reset to safe defaults on disconnect */
+		regmap_update_bits(chip->regmap,
+				   chip->base + USBIN_ADAPTER_ALLOW_CFG,
+				   0x0f, 0);
+		regmap_write(chip->regmap,
+			  chip->base + USBIN_ADAPTER_ALLOW_OVERRIDE,
+			  ADAPTER_ALLOW_FORCE_5V);
+		regmap_write(chip->regmap,
+			  chip->base + CMD_ICL_OVERRIDE, 0);
+		/* Disable HVDCP when disconnected */
+		regmap_update_bits(chip->regmap,
+				   chip->base + USBIN_OPTIONS_1_CFG,
+				   HVDCP_AUTH_ALG_EN_CFG_BIT | HVDCP_EN_BIT | HVDCP_AUTONOMOUS_MODE_EN_CFG_BIT, 0);
+		chip->hvdcp_detected = false;
+		chip->is_qc3 = false;
+		chip->qc_negotiated = false;
+		chip->apsd_rerun_done = false;
+		chip->apsd_retry_count = 0;
+		chip->qc3_wait_count = 0;
+		mutex_unlock(&chip->lock);
+		return;
+	}
+
+	if (chip->pd_icl_ua) {
+		pr_info("smb: PD path, pd_icl_ua=%u\n", chip->pd_icl_ua);
+		current_ua = min_t(unsigned int, chip->pd_icl_ua, USB_ICL_MAX_UA);
+		/* PD contract active: allow up to 9V input and force software ICL */
+		regmap_update_bits(chip->regmap,
+				   chip->base + USBIN_ADAPTER_ALLOW_CFG,
+				   0x0f, 8);
+		regmap_write(chip->regmap,
+			  chip->base + CMD_ICL_OVERRIDE,
+			  ICL_OVERRIDE_BIT);
+	} else {
+		pr_info("smb: non-PD path, enabling HVDCP\n");
+		/* Allow all voltages for QC negotiation */
+		regmap_write(chip->regmap,
+			  chip->base + USBIN_ADAPTER_ALLOW_OVERRIDE,
+			  ADAPTER_ALLOW_FORCE_NULL);
+
+		/* Quick path: if QC was already detected by a previous
+		 * APSD run but voltage negotiation hasn't happened yet,
+		 * do it now instead of re-running APSD.
+		 */
+		if (chip->hvdcp_detected && !chip->qc_negotiated) {
+			chip->qc_negotiated = true;
+			current_ua = 3000000;
+			regmap_write(chip->regmap,
+			  chip->base + CMD_ICL_OVERRIDE,
+			  ICL_OVERRIDE_BIT);
+			regmap_update_bits(chip->regmap,
+					   chip->base + USBIN_ADAPTER_ALLOW_CFG,
+					   0x0f, 8);
+			pr_info("smb: QC already detected (qc3=%d), negotiating voltage\n",
+				chip->is_qc3);
+			/* Disable autonomous mode for software D+/D- control */
+			regmap_update_bits(chip->regmap,
+				chip->base + USBIN_OPTIONS_1_CFG,
+				HVDCP_AUTONOMOUS_MODE_EN_CFG_BIT, 0);
+			if (chip->is_qc3) {
+				int i;
+				unsigned int qc_stat;
+				for (i = 0; i < 20; i++) {
+					regmap_update_bits(chip->regmap,
+						chip->base + CMD_HVDCP_2_REG,
+						SINGLE_INCREMENT_BIT,
+						SINGLE_INCREMENT_BIT);
+					msleep(2);
+				}
+				pr_info("smb: QC3 %d increments (quick)\n", i);
+				regmap_read(chip->regmap,
+					chip->base + QC_CHANGE_STATUS_REG,
+					&qc_stat);
+				pr_info("smb: QC_STATUS=0x%x after QC3\n", qc_stat);
+			} else {
+				int rc;
+				unsigned int qc_stat;
+				regmap_update_bits(chip->regmap,
+					chip->base + CMD_HVDCP_2_REG,
+					FORCE_9V_BIT, FORCE_9V_BIT);
+				pr_info("smb: QC2 FORCE_9V\n");
+				msleep(50);
+				regmap_read(chip->regmap,
+					chip->base + QC_CHANGE_STATUS_REG,
+					&qc_stat);
+				pr_info("smb: QC_STATUS=0x%x after QC2\n", qc_stat);
+			}
+			/* Read VBUS after QC negotiation */
+			{
+				union power_supply_propval pval;
+				int vbus_uv = 0;
+				if (chip->chg_psy &&
+				    power_supply_get_property(chip->chg_psy,
+					POWER_SUPPLY_PROP_VOLTAGE_NOW, &pval) == 0)
+					vbus_uv = pval.intval;
+				pr_info("smb: VBUS after QC=%d\n", vbus_uv);
+			}
+			goto set_current;
+		}
+
+		/* Enable DPDM regulator to route D+/D- to PMIC for QC negotiation */
+		if (chip->dpdm_reg && !chip->dpdm_enabled) {
+			rc = regulator_enable(chip->dpdm_reg);
+			if (rc < 0)
+				dev_warn(chip->dev, "Couldn't enable dpdm regulator rc=%d\n", rc);
+			else {
+				chip->dpdm_enabled = true;
+				pr_info("smb: DPDM regulator enabled\n");
+			}
+		}
+		/* Allow all voltages for QC negotiation */
+		regmap_write(chip->regmap,
+			  chip->base + USBIN_ADAPTER_ALLOW_OVERRIDE,
+			  ADAPTER_ALLOW_FORCE_NULL);
+		/* Force ICL override and allow 9V */
+		regmap_write(chip->regmap,
+			  chip->base + CMD_ICL_OVERRIDE,
+			  ICL_OVERRIDE_BIT);
+		regmap_update_bits(chip->regmap,
+				   chip->base + USBIN_ADAPTER_ALLOW_CFG,
+				   0x0f, 8);
+		/* Enable HVDCP auth, QC3.0 handshake, and autonomous mode.
+		 * In autonomous mode, PMIC hardware will automatically
+		 * negotiate QC voltage via D+/D- without software
+		 * intervention. We just need to wait and then check the
+		 * result.
+		 */
+		regmap_update_bits(chip->regmap,
+				   chip->base + USBIN_OPTIONS_1_CFG,
+				   HVDCP_AUTH_ALG_EN_CFG_BIT | HVDCP_EN_BIT,
+				   HVDCP_AUTH_ALG_EN_CFG_BIT | HVDCP_EN_BIT);
+		/* Allow adapter voltage up to 9V — without this the PMIC
+		 * will refuse to negotiate above 5V even in autonomous mode.
+		 */
+		regmap_update_bits(chip->regmap,
+				   chip->base + USBIN_ADAPTER_ALLOW_CFG,
+				   0x0f, 8);
+		regmap_write(chip->regmap,
+			  chip->base + USBIN_ADAPTER_ALLOW_OVERRIDE,
+			  ADAPTER_ALLOW_FORCE_NULL);
+		{
+			unsigned int opt1 = 0, qc_chg = 0, adapter_cfg = 0, adapter_ovr = 0;
+			regmap_read(chip->regmap,
+				    chip->base + USBIN_OPTIONS_1_CFG, &opt1);
+			regmap_read(chip->regmap,
+				    chip->base + QC_CHANGE_STATUS_REG, &qc_chg);
+			regmap_read(chip->regmap,
+				    chip->base + USBIN_ADAPTER_ALLOW_CFG, &adapter_cfg);
+			regmap_read(chip->regmap,
+				    chip->base + USBIN_ADAPTER_ALLOW_OVERRIDE, &adapter_ovr);
+			pr_info("smb: USBIN_OPTIONS_1=0x%x QC_STATUS=0x%x ADAPTER_CFG=0x%x ADAPTER_OVR=0x%x\n",
+				opt1, qc_chg, adapter_cfg, adapter_ovr);
+		}
+
+		/* Read APSD result. DO NOT rerun APSD — that interrupts
+		 * PMIC autonomous mode QC negotiation. Just read the
+		 * current result and wait for QC bits to appear.
+		 */
+		rc = smb_apsd_get_charger_type(chip, &charger_type);
+		pr_info("smb: APSD rc=%d charger_type=%d hvdcp=%d retry=%d\n",
+			rc, charger_type, chip->hvdcp_detected,
+			chip->apsd_retry_count);
+
+		if (chip->hvdcp_detected) {
+			/* QC charger detected. If this is the first time
+			 * seeing QC2.0, wait additional cycles to see if
+			 * it upgrades to QC3.0 (PMIC autonomous mode
+			 * detects QC2.0 first, then QC3.0).
+			 */
+			if (!chip->is_qc3 && chip->qc3_wait_count < 3) {
+				chip->qc3_wait_count++;
+				current_ua = smb_apsd_icl_ua(chip, charger_type);
+				pr_info("smb: QC2.0 detected, waiting to see if QC3.0 (wait=%d)\n",
+					chip->qc3_wait_count);
+				schedule_delayed_work(&chip->status_change_work,
+						      msecs_to_jiffies(2000));
+				goto set_current;
+			}
+			/* QC type stable now, negotiate voltage */
+			current_ua = 3000000;
+			if (!chip->qc_negotiated) {
+				unsigned int qc_stat;
+				int i;
+
+				chip->qc_negotiated = true;
+				pr_info("smb: QC detected (qc3=%d), negotiating voltage\n",
+					chip->is_qc3);
+
+				/* Software-controlled QC negotiation.
+				 * Autonomous mode is NOT enabled — vendor
+				 * driver uses software control for QC3.0
+				 * via SINGLE_INCREMENT commands.
+				 */
+				if (chip->is_qc3) {
+					unsigned int cmd_val, opt1, regval;
+					/* Dump all QC-relevant registers */
+					regmap_read(chip->regmap, chip->base + 0x362, &opt1);
+					pr_info("smb: USBIN_OPTIONS_1=0x%x\n", opt1);
+					regmap_read(chip->regmap, chip->base + 0x360, &opt1);
+					pr_info("smb: ADAPTER_ALLOW_CFG=0x%x\n", opt1);
+					regmap_read(chip->regmap, chip->base + 0x344, &opt1);
+					pr_info("smb: ADAPTER_ALLOW_OVERRIDE=0x%x\n", opt1);
+					regmap_read(chip->regmap, chip->base + 0x342, &opt1);
+					pr_info("smb: CMD_ICL_OVERRIDE=0x%x\n", opt1);
+					regmap_read(chip->regmap, chip->base + 0x309, &opt1);
+					pr_info("smb: QC_CHANGE_STATUS=0x%x\n", opt1);
+					regmap_read(chip->regmap, chip->base + 0x308, &opt1);
+					pr_info("smb: QC_2P0_STATUS=0x%x\n", opt1);
+					regmap_read(chip->regmap, chip->base + 0x343, &cmd_val);
+					pr_info("smb: CMD_HVDCP_2 before: 0x%x\n", cmd_val);
+
+					/* Test: try regmap_write directly */
+					rc = regmap_write(chip->regmap,
+						chip->base + CMD_HVDCP_2_REG,
+						FORCE_9V_BIT);
+					pr_info("smb: regmap_write FORCE_9V rc=%d\n", rc);
+					msleep(100);
+					regmap_read(chip->regmap, chip->base + 0x309, &regval);
+					pr_info("smb: QC_STATUS after FORCE_9V=0x%x\n", regval);
+					{
+						union power_supply_propval pval;
+						if (chip->chg_psy &&
+						    power_supply_get_property(chip->chg_psy,
+							POWER_SUPPLY_PROP_VOLTAGE_NOW, &pval) == 0)
+							pr_info("smb: VBUS after FORCE_9V=%d\n", pval.intval);
+					}
+					/* If FORCE_9V didn't work, try SINGLE_INCREMENT */
+					if (!(regval & QC_9V_BIT)) {
+						pr_info("smb: FORCE_9V failed, trying SINGLE_INCREMENT\n");
+						for (i = 0; i < 20; i++) {
+							rc = regmap_write(chip->regmap,
+								chip->base + CMD_HVDCP_2_REG,
+								SINGLE_INCREMENT_BIT);
+							if (rc)
+								pr_info("smb: SINGLE_INCREMENT rc=%d i=%d\n", rc, i);
+							msleep(50);
+						}
+						pr_info("smb: QC3 %d increments sent\n", i);
+						msleep(500);
+						regmap_read(chip->regmap, chip->base + 0x309, &regval);
+						pr_info("smb: QC_STATUS after increments=0x%x\n", regval);
+						{
+							union power_supply_propval pval;
+							if (chip->chg_psy &&
+							    power_supply_get_property(chip->chg_psy,
+								POWER_SUPPLY_PROP_VOLTAGE_NOW, &pval) == 0)
+								pr_info("smb: VBUS after increments=%d\n", pval.intval);
+						}
+					}
+				} else {
+					/* QC2.0: try FORCE_9V */
+					regmap_read(chip->regmap,
+						chip->base + QC_CHANGE_STATUS_REG,
+						&qc_stat);
+					pr_info("smb: QC2 QC_STATUS=0x%x before force\n", qc_stat);
+					if (qc_stat & QC_9V_BIT) {
+						pr_info("smb: QC2 already at 9V\n");
+					} else {
+						regmap_update_bits(chip->regmap,
+							chip->base + CMD_HVDCP_2_REG,
+							FORCE_9V_BIT, FORCE_9V_BIT);
+						pr_info("smb: QC2 FORCE_9V\n");
+						msleep(500);
+						regmap_read(chip->regmap,
+							chip->base + QC_CHANGE_STATUS_REG,
+							&qc_stat);
+						pr_info("smb: QC_STATUS=0x%x after QC2\n", qc_stat);
+						/* If FORCE_9V failed, try
+						 * SINGLE_INCREMENT (works with
+						 * QC3.0 chargers in QC2.0 mode)
+						 */
+						if (!(qc_stat & QC_9V_BIT)) {
+							pr_info("smb: QC2 FORCE_9V failed, trying SINGLE_INCREMENT\n");
+							for (i = 0; i < 20; i++) {
+								regmap_update_bits(chip->regmap,
+									chip->base + CMD_HVDCP_2_REG,
+									SINGLE_INCREMENT_BIT,
+									SINGLE_INCREMENT_BIT);
+								msleep(50);
+							}
+							pr_info("smb: QC2 %d increments sent\n", i);
+							msleep(500);
+							regmap_read(chip->regmap,
+								chip->base + QC_CHANGE_STATUS_REG,
+								&qc_stat);
+							pr_info("smb: QC_STATUS=0x%x after QC2 increments\n", qc_stat);
+						}
+					}
+				}
+				/* Read VBUS after QC negotiation */
+				{
+					unsigned int vbus_raw;
+					int vbus_uv = 0;
+					/* Try IIO for VBUS reading */
+					if (chip->chg_psy) {
+						union power_supply_propval pval;
+						if (power_supply_get_property(chip->chg_psy,
+							POWER_SUPPLY_PROP_VOLTAGE_NOW, &pval) == 0)
+							pr_info("smb: VBUS psy=%d\n", pval.intval);
+					}
+					/* Also read directly from IIO */
+					regmap_read(chip->regmap,
+						chip->base + 0x47,
+						&vbus_raw);
+					pr_info("smb: VBUS raw=0x%x\n", vbus_raw);
+				}
+				/* QC negotiation done — schedule CP check */
+				schedule_delayed_work(&chip->status_change_work,
+						      msecs_to_jiffies(500));
+			}
+		} else if (chip->apsd_retry_count < 10) {
+			/* QC not yet detected. PMIC autonomous mode is
+			 * negotiating. Wait and check again.
+			 */
+			chip->apsd_retry_count++;
+			current_ua = smb_apsd_icl_ua(chip, charger_type);
+			pr_info("smb: QC not detected yet, waiting (attempt %d, icl=%u)\n",
+				chip->apsd_retry_count, current_ua);
+			schedule_delayed_work(&chip->status_change_work,
+					      msecs_to_jiffies(2000));
+		} else {
+			/* QC not detected after 10 waits (~20s).
+			 * Try FORCE_9V directly as last resort.
+			 */
+			pr_info("smb: QC not detected after %d waits, trying FORCE_9V\n",
+				chip->apsd_retry_count);
+			chip->hvdcp_detected = true;
+			chip->is_qc3 = false;
+			chip->qc_negotiated = true;
+			current_ua = 3000000;
+			regmap_update_bits(chip->regmap,
+				chip->base + CMD_HVDCP_2_REG,
+				FORCE_9V_BIT, FORCE_9V_BIT);
+			pr_info("smb: Forced FORCE_9V\n");
+			msleep(50);
+			{
+				unsigned int qc_stat;
+				regmap_read(chip->regmap,
+					chip->base + QC_CHANGE_STATUS_REG,
+					&qc_stat);
+				pr_info("smb: QC_STATUS=0x%x after forced FORCE_9V\n",
+					qc_stat);
+			}
+			{
+				union power_supply_propval pval;
+				int vbus_uv = 0;
+				if (chip->chg_psy &&
+				    power_supply_get_property(chip->chg_psy,
+					POWER_SUPPLY_PROP_VOLTAGE_NOW, &pval) == 0)
+					vbus_uv = pval.intval;
+				pr_info("smb: VBUS after force_9V=%d\n", vbus_uv);
+			}
+		}
+	}
+
+set_current:
+	smb_set_current_limit(chip, current_ua);
+
+	if (!chip->cp_enabled)
+		smb_set_fcc(chip, smb_default_fcc_ua(chip));
+
+	smb_update_charge_pump(chip, current_ua);
+	mutex_unlock(&chip->lock);
+
+	power_supply_changed(chip->chg_psy);
+}
+
+static void smb_status_change_work(struct work_struct *work)
+{
 	struct smb_chip *chip;
 
 	chip = container_of(work, struct smb_chip, status_change_work.work);
+	smb_apply_input_limits(chip);
+}
 
-	smb_get_prop_usb_online(chip, &usb_online);
-	if (!usb_online)
-		return;
+static bool smb_psy_is_tcpm(struct power_supply *psy)
+{
+	const char *name;
 
-	for (count = 0; count < 3; count++) {
-		dev_dbg(chip->dev, "get charger type retry %d\n", count);
-		rc = smb_apsd_get_charger_type(chip, &charger_type);
-		if (rc != -EAGAIN)
-			break;
-		msleep(100);
+	if (!psy || !psy->desc || !psy->desc->name)
+		return false;
+
+	name = psy->desc->name;
+	return !strncmp(name, "tcpm-source-psy-", 16);
+}
+
+static int smb_read_tcpm_contract(struct smb_chip *chip, struct power_supply *psy)
+{
+	union power_supply_propval volt = { 0 }, curr = { 0 };
+	int rc;
+
+	rc = power_supply_get_property(psy, POWER_SUPPLY_PROP_ONLINE, &volt);
+	if (rc || !volt.intval) {
+		chip->pd_icl_ua = 0;
+		chip->pd_vbus_uv = 0;
+		return 0;
 	}
 
-	if (rc < 0 && rc != -EAGAIN) {
-		dev_err(chip->dev, "get charger type failed: %d\n", rc);
-		return;
-	}
+	rc = power_supply_get_property(psy, POWER_SUPPLY_PROP_VOLTAGE_NOW,
+				       &volt);
+	if (rc)
+		return rc;
 
-	if (rc < 0) {
-		rc = regmap_update_bits(chip->regmap, chip->base + CMD_APSD,
-					APSD_RERUN_BIT, APSD_RERUN_BIT);
+	rc = power_supply_get_property(psy, POWER_SUPPLY_PROP_CURRENT_MAX,
+				       &curr);
+	if (rc)
+		return rc;
+
+	chip->pd_vbus_uv = volt.intval;
+	chip->pd_icl_ua = curr.intval;
+	return 0;
+}
+
+static int smb_notifier_call(struct notifier_block *nb, unsigned long event,
+			     void *data)
+{
+	struct smb_chip *chip = container_of(nb, struct smb_chip, nb);
+	struct power_supply *psy = data;
+
+	if (event != PSY_EVENT_PROP_CHANGED)
+		return NOTIFY_DONE;
+
+	if (smb_psy_is_tcpm(psy)) {
+		mutex_lock(&chip->lock);
+		smb_read_tcpm_contract(chip, psy);
+		mutex_unlock(&chip->lock);
 		schedule_delayed_work(&chip->status_change_work,
-				      msecs_to_jiffies(1000));
-		dev_dbg(chip->dev, "get charger type failed, rerun apsd\n");
-		return;
+				      msecs_to_jiffies(100));
+		return NOTIFY_OK;
 	}
 
-	switch (charger_type) {
-	case POWER_SUPPLY_USB_TYPE_CDP:
-		current_ua = CDP_CURRENT_UA;
-		break;
-	case POWER_SUPPLY_USB_TYPE_DCP:
-		current_ua = chip->batt_info->constant_charge_current_max_ua;
-		break;
-	case POWER_SUPPLY_USB_TYPE_SDP:
-	default:
-		current_ua = SDP_CURRENT_UA;
-		break;
+	if (chip->cp_psy && psy == chip->cp_psy) {
+		schedule_delayed_work(&chip->status_change_work, 0);
+		return NOTIFY_OK;
 	}
 
-	smb_set_current_limit(chip, current_ua);
-	power_supply_changed(chip->chg_psy);
+	return NOTIFY_DONE;
+}
+
+static void smb_external_power_changed(struct power_supply *psy)
+{
+	struct smb_chip *chip = power_supply_get_drvdata(psy);
+
+	schedule_delayed_work(&chip->status_change_work,
+			      msecs_to_jiffies(100));
 }
 
 static int smb_get_iio_chan(struct smb_chip *chip, struct iio_channel *chan,
 			     int *val)
 {
-	int rc;
-	union power_supply_propval status;
-
-	rc = power_supply_get_property(chip->chg_psy, POWER_SUPPLY_PROP_STATUS,
-				       &status);
-	if (rc < 0 || status.intval != POWER_SUPPLY_STATUS_CHARGING) {
+	if (IS_ERR(chan)) {
 		*val = 0;
 		return 0;
-	}
-
-	if (IS_ERR(chan)) {
-		dev_err(chip->dev, "Failed to chan, err = %li", PTR_ERR(chan));
-		return PTR_ERR(chan);
 	}
 
 	return iio_read_channel_processed(chan, val);
@@ -722,89 +1440,114 @@ static const struct power_supply_desc smb_psy_desc = {
 	.get_property = smb_get_property,
 	.set_property = smb_set_property,
 	.property_is_writeable = smb_property_is_writable,
+	.external_power_changed = smb_external_power_changed,
 };
 
 /* Init sequence derived from vendor downstream driver */
 static const struct smb_init_register smb5_init_seq[] = {
-	{ .addr = USBIN_CMD_IL, .mask = USBIN_SUSPEND_BIT, .val = 0 },
-	/*
-	 * By default configure us as an upstream facing port
-	 * FIXME: This will be handled by the type-c driver
-	 */
-	{ .addr = SMB5_TYPE_C_MODE_CFG,
-	  .mask = SMB5_EN_TRY_SNK_BIT | SMB5_EN_SNK_ONLY_BIT,
-	  .val = SMB5_EN_TRY_SNK_BIT },
-	{ .addr = SMB5_TYPEC_TYPE_C_VCONN_CONTROL,
-	  .mask = SMB5_VCONN_EN_ORIENTATION_BIT | SMB5_VCONN_EN_SRC_BIT |
-		  SMB5_VCONN_EN_VALUE_BIT,
-	  .val = SMB2_VCONN_EN_SRC_BIT },
-	{ .addr = SMB5_DEBUG_ACCESS_SRC_CFG,
-	  .mask = SMB5_EN_UNORIENTED_DEBUG_ACCESS_SRC_BIT,
-	  .val = SMB5_EN_UNORIENTED_DEBUG_ACCESS_SRC_BIT },
-	{ .addr = SMB5_TYPE_C_EXIT_STATE_CFG,
-	  .mask = SMB5_SEL_SRC_UPPER_REF_BIT,
-	  .val = SMB5_SEL_SRC_UPPER_REF_BIT },
-	/*
-	 * Disable Type-C factory mode and stay in Attached.SRC state when VCONN
-	 * over-current happens
-	 */
-	{ .addr = TYPE_C_CFG,
-	  .mask = APSD_START_ON_CC_BIT,
-	  .val = 0 },
-	{ .addr = SMB5_TYPE_C_DEBUG_ACCESS_SINK,
-	  .mask = SMB5_TYPEC_DEBUG_ACCESS_SINK_MASK,
-	  .val = 0x17 },
-	/* Configure VBUS for software control */
-	{ .addr = OTG_CFG, .mask = OTG_EN_SRC_CFG_BIT, .val = 0 },
-	/*
-	 * Recharge when State Of Charge drops below 98%.
-	 */
-	{ .addr = SMB5_CHARGE_RCHG_SOC_THRESHOLD_CFG_REG,
-	  .mask = SMB5_CHARGE_RCHG_SOC_THRESHOLD_CFG_MASK,
-	  .val = 250 },
-	/* Enable charging */
-	{ .addr = CHARGING_ENABLE_CMD,
-	  .mask = CHARGING_ENABLE_CMD_BIT,
-	  .val = CHARGING_ENABLE_CMD_BIT },
-	/* Enable BC1P2 auto Src detect */
-	{ .addr = USBIN_OPTIONS_1_CFG,
-	  .mask = AUTO_SRC_DETECT_BIT,
-	  .val = AUTO_SRC_DETECT_BIT },
-	/* Set the default SDP charger type to a 500ma USB 2.0 port */
-	{ .addr = USBIN_ICL_OPTIONS,
-	  .mask = USBIN_MODE_CHG_BIT,
-	  .val = USBIN_MODE_CHG_BIT },
-	{ .addr = CMD_ICL_OVERRIDE,
-	  .mask = ICL_OVERRIDE_BIT,
-	  .val = 0 },
-	{ .addr = USBIN_LOAD_CFG,
-	  .mask = ICL_OVERRIDE_AFTER_APSD_BIT,
-	  .val = 0 },
-	/* Disable watchdog */
-	{ .addr = SNARL_BARK_BITE_WD_CFG, .mask = 0xff, .val = 0 },
-	{ .addr = WD_CFG,
-	  .mask = WATCHDOG_TRIGGER_AFP_EN_BIT | WDOG_TIMER_EN_ON_PLUGIN_BIT |
-		  BARK_WDOG_INT_EN_BIT,
-	  .val = 0 },
-	/*
-	 * Enable Automatic Input Current Limit, this will slowly ramp up the current
-	 * When connected to a wall charger, and automatically stop when it detects
-	 * the charger current limit (voltage drop?) or it reaches the programmed limit.
-	 */
-	{ .addr = USBIN_AICL_OPTIONS_CFG,
-	  .mask = USBIN_AICL_PERIODIC_RERUN_EN_BIT | USBIN_AICL_ADC_EN_BIT
-			| USBIN_AICL_EN_BIT | SUSPEND_ON_COLLAPSE_USBIN_BIT,
-	  .val = USBIN_AICL_PERIODIC_RERUN_EN_BIT | USBIN_AICL_ADC_EN_BIT
-			| USBIN_AICL_EN_BIT | SUSPEND_ON_COLLAPSE_USBIN_BIT },
-	/*
-	 * This overrides all of the other current limit configs and is
-	 * expected to be used for setting limits based on temperature.
-	 * We set some relatively safe default value while still allowing
-	 * a comfortably fast charging rate.
-	 */
-	{ .addr = FAST_CHARGE_CURRENT_CFG,
-	  .mask = FAST_CHARGE_CURRENT_SETTING_MASK,
-	  .val = 1950000 / CURRENT_SCALE_FACTOR },
+{ .addr = USBIN_CMD_IL, .mask = USBIN_SUSPEND_BIT, .val = 0 },
+/*
+ * By default configure us as an upstream facing port
+ * FIXME: This will be handled by the type-c driver
+ */
+{ .addr = SMB5_TYPE_C_MODE_CFG,
+  .mask = SMB5_EN_TRY_SNK_BIT | SMB5_EN_SNK_ONLY_BIT,
+  .val = SMB5_EN_TRY_SNK_BIT },
+{ .addr = SMB5_TYPEC_TYPE_C_VCONN_CONTROL,
+  .mask = SMB5_VCONN_EN_ORIENTATION_BIT | SMB5_VCONN_EN_SRC_BIT |
+  SMB5_VCONN_EN_VALUE_BIT,
+  .val = SMB2_VCONN_EN_SRC_BIT },
+{ .addr = SMB5_DEBUG_ACCESS_SRC_CFG,
+  .mask = SMB5_EN_UNORIENTED_DEBUG_ACCESS_SRC_BIT,
+  .val = SMB5_EN_UNORIENTED_DEBUG_ACCESS_SRC_BIT },
+{ .addr = SMB5_TYPE_C_EXIT_STATE_CFG,
+  .mask = SMB5_SEL_SRC_UPPER_REF_BIT,
+  .val = SMB5_SEL_SRC_UPPER_REF_BIT },
+/*
+ * Disable Type-C factory mode and stay in Attached.SRC state when VCONN
+ * over-current happens
+ */
+{ .addr = TYPE_C_CFG,
+  .mask = APSD_START_ON_CC_BIT,
+  .val = 0 },
+{ .addr = SMB5_TYPE_C_DEBUG_ACCESS_SINK,
+  .mask = SMB5_TYPEC_DEBUG_ACCESS_SINK_MASK,
+  .val = 0x17 },
+/* Configure VBUS for software control */
+{ .addr = OTG_CFG, .mask = OTG_EN_SRC_CFG_BIT, .val = 0 },
+/*
+ * Recharge when State Of Charge drops below 98%.
+ */
+{ .addr = SMB5_CHARGE_RCHG_SOC_THRESHOLD_CFG_REG,
+  .mask = SMB5_CHARGE_RCHG_SOC_THRESHOLD_CFG_MASK,
+  .val = 250 },
+/* Enable charging */
+{ .addr = CHARGING_ENABLE_CMD,
+  .mask = CHARGING_ENABLE_CMD_BIT,
+  .val = CHARGING_ENABLE_CMD_BIT },
+/* Enable factory mode detection + don't wait for CC before APSD */
+{ .addr = TYPE_C_CFG,
+  .mask = APSD_START_ON_CC_BIT | FACTORY_MODE_DETECTION_EN_BIT,
+  .val = FACTORY_MODE_DETECTION_EN_BIT },
+/* Force uUSB factory mode so D+/D- get routed to charger for APSD/QC */
+{ .addr = TYPEC_U_USB_CFG_REG,
+  .mask = EN_MICRO_USB_FACTORY_MODE_BIT | EN_MICRO_USB_MODE_BIT,
+  .val = EN_MICRO_USB_FACTORY_MODE_BIT | EN_MICRO_USB_MODE_BIT },
+/* Disable Type-C DRP state machine — it interferes with D+/D- QC
+ * negotiation when no CC signal is present (USB-A-to-C cable).
+ * Set EN_SNK_ONLY_BIT to prevent Type-C from trying source role. */
+{ .addr = 0x544,	/* TYPE_C_MODE_CFG_REG */
+  .mask = 0x1f,	/* EN_TRY_SNK|EN_SRC_ONLY|EN_SNK_ONLY etc */
+  .val = BIT(1) },	/* EN_SNK_ONLY_BIT - sink only, no DRP */
+/* Enable HVDCP auth + QC enable (no autonomous mode - vendor driver
+ * uses software SINGLE_INCREMENT for QC3.0 voltage control) */
+{ .addr = USBIN_OPTIONS_1_CFG,
+  .mask = HVDCP_AUTH_ALG_EN_CFG_BIT | HVDCP_EN_BIT | HVDCP_AUTONOMOUS_MODE_EN_CFG_BIT,
+  .val = HVDCP_AUTH_ALG_EN_CFG_BIT | HVDCP_EN_BIT },
+/* Allow all input voltages (5V-12V) for QC negotiation.
+ * Without this, ADAPTER_ALLOW_OVERRIDE defaults to FORCE_5V
+ * which blocks QC voltage increase. */
+{ .addr = USBIN_ADAPTER_ALLOW_OVERRIDE,
+  .mask = 0x0f,
+  .val = ADAPTER_ALLOW_FORCE_NULL },
+/* Set the default SDP charger type to a 500ma USB 2.0 port */
+{ .addr = USBIN_ICL_OPTIONS,
+  .mask = USBIN_MODE_CHG_BIT,
+  .val = USBIN_MODE_CHG_BIT },
+{ .addr = CMD_ICL_OVERRIDE,
+  .mask = ICL_OVERRIDE_BIT,
+  .val = ICL_OVERRIDE_BIT },
+{ .addr = USBIN_CURRENT_LIMIT_CFG,
+  .mask = 0xff,
+  .val = 3000000 / CURRENT_SCALE_FACTOR },
+{ .addr = USBIN_LOAD_CFG,
+  .mask = ICL_OVERRIDE_AFTER_APSD_BIT,
+  .val = ICL_OVERRIDE_AFTER_APSD_BIT },
+/* Disable watchdog */
+{ .addr = SNARL_BARK_BITE_WD_CFG, .mask = 0xff, .val = 0 },
+{ .addr = WD_CFG,
+  .mask = WATCHDOG_TRIGGER_AFP_EN_BIT | WDOG_TIMER_EN_ON_PLUGIN_BIT |
+  BARK_WDOG_INT_EN_BIT,
+  .val = 0 },
+/*
+ * This overrides all of the other current limit configs and is
+ * expected to be used for setting limits based on temperature.
+ * We set some relatively safe default value while still allowing
+ * a comfortably fast charging rate.
+ */
+{ .addr = FAST_CHARGE_CURRENT_CFG,
+  .mask = FAST_CHARGE_CURRENT_SETTING_MASK,
+  .val = 1950000 / CURRENT_SCALE_FACTOR },
+/*
+ * Enable Automatic Input Current Limit, this will slowly ramp up the current
+ * When connected to a wall charger, and automatically stop when it detects
+ * the charger current limit (voltage drop?) or it reaches the programmed limit.
+ */
+{ .addr = USBIN_AICL_OPTIONS_CFG,
+  .mask = USBIN_AICL_PERIODIC_RERUN_EN_BIT | USBIN_AICL_ADC_EN_BIT |
+	  USBIN_AICL_EN_BIT | SUSPEND_ON_COLLAPSE_USBIN_BIT |
+	  USBIN_AICL_START_AT_MAX_BIT,
+  .val = USBIN_AICL_ADC_EN_BIT },
 };
 
 /* Init sequence derived from vendor downstream driver */
@@ -935,8 +1678,6 @@ static int smb_init_hw(struct smb_chip *chip, const struct smb_init_register *in
 	int rc, i;
 
 	for (i = 0; i < len; i++) {
-		dev_dbg(chip->dev, "%d: Writing 0x%02x to 0x%02x\n", i,
-			init_seq[i].val, init_seq[i].addr);
 		rc = regmap_update_bits(chip->regmap,
 					chip->base + init_seq[i].addr,
 					init_seq[i].mask,
@@ -1014,6 +1755,39 @@ static int smb_probe(struct platform_device *pdev)
 
 	dev_info(chip->dev, "Generation %s\n", chip->gen == SMB2 ? "SMB2" : "SMB5");
 
+	/* Get DPDM regulator for D+/D- signal routing.
+	 * Try "dpdm" supply name (DTS dpdm-supply), then fall
+	 * back to global lookup by regulator name.
+	 */
+	chip->dpdm_reg = devm_regulator_get(chip->dev, "dpdm");
+	if (IS_ERR(chip->dpdm_reg)) {
+		dev_err(chip->dev, "dpdm regulator DTS lookup failed: %ld, trying global\n",
+			PTR_ERR(chip->dpdm_reg));
+		chip->dpdm_reg = regulator_get(NULL, "dpdm");
+		if (IS_ERR(chip->dpdm_reg)) {
+			chip->dpdm_reg = NULL;
+			dev_info(chip->dev, "No dpdm regulator (D+/D- routed via uUSB mode)\n");
+		} else {
+			dev_info(chip->dev, "Found dpdm regulator via global lookup\n");
+		}
+	} else {
+		dev_info(chip->dev, "Found dpdm regulator via DTS\n");
+	}
+
+	/* Enable dpdm regulator immediately at probe so that:
+	 * 1) PHY releases D+/D- lines to PMIC for APSD/QC
+	 * 2) regulator_init_complete doesn't auto-disable it
+	 */
+	if (chip->dpdm_reg) {
+		rc = regulator_enable(chip->dpdm_reg);
+		if (rc < 0) {
+			dev_err(chip->dev, "Couldn't enable dpdm regulator rc=%d\n", rc);
+		} else {
+			chip->dpdm_enabled = true;
+			dev_info(chip->dev, "DPDM regulator enabled at probe\n");
+		}
+	}
+
 	rc = smb_init_hw(chip, match_data->init_seq, match_data->init_seq_len);
 	if (rc < 0)
 		return rc;
@@ -1043,6 +1817,8 @@ static int smb_probe(struct platform_device *pdev)
 				     "Failed to get battery info\n");
 	if (chip->batt_info->constant_charge_current_max_ua == -EINVAL)
 		chip->batt_info->constant_charge_current_max_ua = DCP_CURRENT_UA;
+
+	mutex_init(&chip->lock);
 
 	rc = devm_delayed_work_autocancel(chip->dev, &chip->status_change_work,
 					  smb_status_change_work);
@@ -1082,15 +1858,10 @@ static int smb_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, chip);
 
 	/*
-	 * This overrides all of the other current limits and is expected
-	 * to be used for setting limits based on temperature. We set some
-	 * relatively safe default value while still allowing a comfortably
-	 * fast charging rate. Once temperature monitoring is hooked up we
-	 * would expect this to be changed dynamically based on temperature
-	 * reporting.
+	 * Program FCC from DT constant-charge-current-max. Charge-pump mode
+	 * may raise this further to ~2×ICL (capped at 5.1A).
 	 */
-	rc = regmap_write(chip->regmap, chip->base + FAST_CHARGE_CURRENT_CFG,
-			  1950000 / CURRENT_SCALE_FACTOR);
+	rc = smb_set_fcc(chip, smb_default_fcc_ua(chip));
 	if (rc < 0)
 		return dev_err_probe(chip->dev, rc,
 				     "Couldn't write fast charge current cfg");
@@ -1101,10 +1872,28 @@ static int smb_probe(struct platform_device *pdev)
 		return dev_err_probe(chip->dev, rc,
 				     "Couldn't write fast AICL rerun time");
 
+	chip->nb.notifier_call = smb_notifier_call;
+	rc = power_supply_reg_notifier(&chip->nb);
+	if (rc)
+		return dev_err_probe(chip->dev, rc,
+				     "Failed to register psy notifier\n");
+
 	/* Initialise charger state */
 	schedule_delayed_work(&chip->status_change_work, 0);
 
 	return 0;
+}
+
+static void smb_remove(struct platform_device *pdev)
+{
+	struct smb_chip *chip = platform_get_drvdata(pdev);
+
+	power_supply_unreg_notifier(&chip->nb);
+	if (chip->cp_psy) {
+		power_supply_put(chip->cp_psy);
+		chip->cp_psy = NULL;
+	}
+	smb_cp_hw_enable(chip, false);
 }
 
 static const struct of_device_id smb_match_id_table[] = {
@@ -1118,6 +1907,7 @@ MODULE_DEVICE_TABLE(of, smb_match_id_table);
 
 static struct platform_driver qcom_spmi_smb = {
 	.probe = smb_probe,
+	.remove = smb_remove,
 	.driver = {
 		.name = "qcom-smbx-charger",
 		.of_match_table = smb_match_id_table,

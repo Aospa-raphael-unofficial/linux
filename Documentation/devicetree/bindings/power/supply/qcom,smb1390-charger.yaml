@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/qcom,smb1390-charger.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Qualcomm SMB1390 Switched-Capacitor Charge Pump
+
+maintainers:
+  - Casey Connolly <casey.connolly@linaro.org>
+
+description: |
+  The SMB1390 is a switched-capacitor charge pump used as a secondary
+  charger alongside PM8150B (and similar) on some Qualcomm SM8150 phones.
+  SMB_EN is driven by the primary charger MISC block; SMB_STAT is typically
+  wired to a PMIC GPIO.
+
+properties:
+  compatible:
+    const: qcom,smb1390-charger
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+    description: SMB_STAT fault / status interrupt (optional)
+
+  qcom,primary-charger:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Primary charger power-supply node (e.g. PM8150B charger)
+
+  monitored-battery: true
+
+required:
+  - compatible
+  - reg
+
+allOf:
+  - $ref: power-supply.yaml#
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    i2c {
+      #address-cells = <1>;
+      #size-cells = <0>;
+
+      charger@10 {
+        compatible = "qcom,smb1390-charger";
+        reg = <0x10>;
+        interrupt-parent = <&pm8150b_gpios>;
+        interrupts = <6 IRQ_TYPE_LEVEL_LOW>;
+        qcom,primary-charger = <&pm8150b_charger>;
+      };
+    };
