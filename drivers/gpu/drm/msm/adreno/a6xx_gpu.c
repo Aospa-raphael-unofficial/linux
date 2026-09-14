@@ -2368,14 +2368,25 @@ static struct drm_gpuvm *
 a6xx_create_private_vm(struct msm_gpu *gpu, bool kernel_managed)
 {
 	struct msm_mmu *mmu;
+	struct drm_gpuvm *vm;
 
 	mmu = msm_iommu_pagetable_create(to_msm_vm(gpu->vm)->mmu, kernel_managed);
 
 	if (IS_ERR(mmu))
 		return ERR_CAST(mmu);
 
-	return msm_gem_vm_create(gpu->dev, mmu, "gpu", ADRENO_VM_START,
-				 adreno_private_vm_size(gpu), kernel_managed);
+	vm = msm_gem_vm_create(gpu->dev, mmu, "gpu", ADRENO_VM_START,
+			       adreno_private_vm_size(gpu), kernel_managed);
+
+	/*
+	 * Only kernel-managed VMs allocate iovas in-kernel; user-managed
+	 * (VM_BIND) VMs have userspace pick addresses and must not be padded
+	 * here (it would collide with userspace's packed VA layout).
+	 */
+	if (!IS_ERR(vm) && kernel_managed)
+		adreno_gem_vm_set_va_pad(gpu, vm);
+
+	return vm;
 }
 
 static uint32_t a6xx_get_rptr(struct msm_gpu *gpu, struct msm_ringbuffer *ring)

@@ -64,6 +64,14 @@ enum adreno_family {
 #define ADRENO_QUIRK_4GB_VA			BIT(6)
 #define ADRENO_QUIRK_IFPC			BIT(7)
 #define ADRENO_QUIRK_SOFTFUSE			BIT(8)
+/*
+ * On some a6xx GPUs (e.g. A640) the CCU can issue reads at the buffer's
+ * base address rounded down to 64K (iova & ~0xffff).  If buffers are only
+ * 4K-aligned this lands in an unmapped page below the buffer and triggers a
+ * CCU TRANSLATION fault.  Align kernel-managed GPU VA allocations to 64K so
+ * the buffer base is itself 64K-aligned (mirrors Android KGSL va_padding).
+ */
+#define ADRENO_QUIRK_VA_64K_PAD			BIT(9)
 
 /* Helper for formating the chip_id in the way that userspace tools like
  * crashdec expect.
@@ -655,6 +663,8 @@ struct drm_gpuvm *
 adreno_iommu_create_vm(struct msm_gpu *gpu,
 		       struct platform_device *pdev,
 		       unsigned long quirks);
+
+void adreno_gem_vm_set_va_pad(struct msm_gpu *gpu, struct drm_gpuvm *vm);
 
 int adreno_fault_handler(struct msm_gpu *gpu, unsigned long iova, int flags,
 			 struct adreno_smmu_fault_info *info, const char *block,

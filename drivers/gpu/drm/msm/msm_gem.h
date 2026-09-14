@@ -135,6 +135,16 @@ struct msm_gem_vm {
 	bool managed;
 
 	/**
+	 * @va_pad: GPU VA alignment for kernel-managed allocations.
+	 *
+	 * When non-zero (e.g. SZ_64K on A640), iovas allocated for this VM
+	 * are aligned to this value so the buffer base is naturally aligned,
+	 * avoiding CCU TRANSLATION faults at (iova & ~(va_pad - 1)).
+	 * Only meaningful for kernel-managed VMs.
+	 */
+	u64 va_pad;
+
+	/**
 	 * @unusable: True if the VM has turned unusable because something
 	 * bad happened during an asynchronous request.
 	 *
