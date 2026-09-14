@@ -9,9 +9,12 @@
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/leds/common.h>
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
+#include <dt-bindings/firmware/qcom,scm.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
+#include <dt-bindings/sound/qcom,q6asm.h>
 #include <dt-bindings/usb/pd.h>
 #include "sm8150.dtsi"
+#include "sm8150-wcd9340.dtsi"
 #include "pm8150.dtsi"
 #include "pm8150b.dtsi"
 #include "pm8150l.dtsi"
@@ -53,11 +56,11 @@
 		device-chemistry = "lithium-ion-polymer";
 
 		/*
-		 * Keep the maximum charging current conservative for now,
-		 * until we have thermal handling in the charging driver.
-		 * Downstream seems to have a upper limit of 3A.
+		 * Android: qcom,usb-icl-ua=2.8A, qcom,fcc-max-ua=5.1A (with SMB1390 CP).
+		 * Without charge pump: FCC capped at 3A (~15–18W at 9V PD).
+		 * With SMB1390 active, qcom_smbx raises FCC to min(2×ICL, 5.1A).
 		 */
-		constant-charge-current-max-microamp = <1500000>;
+		constant-charge-current-max-microamp = <3000000>;
 
 		charge-full-design-microamp-hours = <4000000>;
 		voltage-min-design-microvolt = <3400000>;
@@ -72,16 +75,12 @@
 		stdout-path = "serial0:115200n8";
 		bootargs = "earlycon console=ttyMSM0,115200";
 
-		framebuffer: framebuffer@9c000000 {
-			compatible = "simple-framebuffer";
-			reg = <0 0x9c000000 0 (1080 * 2340 * 4)>;
-			width = <1080>;
-			height = <2340>;
-			stride = <(1080 * 4)>;
-			format = "a8r8g8b8";
-			display = <&panel>;
-			clocks = <&gcc GCC_DISP_HF_AXI_CLK>;
-		};
+		/*
+		 * Do not expose chosen/simple-framebuffer here.
+		 * simpledrm probes it and blits uninitialized shadow-buffer
+		 * damage into 0x9c000000 (cont_splash), causing white bars.
+		 * Keep cont_splash_mem reserved for later DRM_MSM handover.
+		 */
 	};
 
         gpio-keys {
@@ -170,6 +169,14 @@
 			reg = <0x0 0x99100000 0x0 0x1400000>;
 		};
 
+		fastrpc_mem: fastrpc {
+			compatible = "shared-dma-pool";
+			alloc-ranges = <0x0 0x00000000 0x0 0xffffffff>;
+			alignment = <0x0 0x400000>;
+			size = <0x0 0x1000000>;
+			reusable;
+		};
+
 		cont_splash_mem: memory@9c000000 {
 			reg = <0x0 0x9c000000 0x0 0x2400000>;
 			no-map;
@@ -185,9 +192,9 @@
 			reg = <0x0 0xa1600000 0x0 0x800000>;
 			console-size = <0x400000>;
 			ecc-size = <0>;
-			ftrace-size = <0>;
+			ftrace-size = <0x20000>;
 			pmsg-size = <0x200000>;
-			record-size = <0>;
+			record-size = <0x20000>;
 			no-map;
 		};
 
@@ -197,7 +204,7 @@
 			no-map;
 
 			qcom,client-id = <1>;
-			qcom,vmid = <15>;
+			qcom,vmid = <QCOM_SCM_VMID_MSS_MSA>;
 		};
 	};
 
@@ -576,7 +583,7 @@
 };
 
 &gpu_zap_shader {
-	firmware-name = "qcom/sm8150/Xiaomi/raphael/a640_zap.mbn";
+	firmware-name = "qcom/a640_zap.mbn";
 };
 
 &i2c19 {
@@ -594,11 +601,40 @@
 	};
 };
 
+&i2c1 {
+	status = "okay";
+	clock-frequency = <400000>;
+
+	tfa9874: speaker-codec@34 {
+		compatible = "nxp,tfa9874";
+		reg = <0x34>;
+		#sound-dai-cells = <0>;
+		sound-name-prefix = "SPKR";
+	};
+};
+
+/*
+ * APPS_I2C (GPIO51/52 qup4) — Android qupv3_se4. SMB1390 charge pump @ 0x10.
+ */
+&i2c4 {
+	clock-frequency = <400000>;
+	status = "okay";
+
+	smb1390: charger@10 {
+		compatible = "qcom,smb1390-charger";
+		reg = <0x10>;
+		interrupt-parent = <&pm8150b_gpios>;
+		interrupts = <6 IRQ_TYPE_EDGE_FALLING>;
+		qcom,primary-charger = <&pm8150b_charger>;
+		status = "okay";
+	};
+};
+
 &ipa {
 	status = "okay";
 	qcom,gsi-loader = "self";
 	memory-region = <&ipa_fw_mem>;
-	firmware-name = "qcom/sm8150/Xiaomi/raphael/ipa_fws.mbn";
+	firmware-name = "qcom/ipa_fws.mdt";
 };
 
 &mdss_dsi0 {
@@ -640,6 +676,7 @@
 
 &mdss {
 	status = "okay";
+	qcom,boot-display-on;
 };
 
 &pm8150_gpios {
@@ -665,9 +702,12 @@
 };
 
 &pm8150b_typec {
-	vdd-vbus-supply = <&pm8150b_vbus>;
-	vdd-pdphy-supply = <&vdda_usb_hs_3p1>;
-	status = "okay";
+	/* Disabled: USB-A-to-C cable has no CC signal, Type-C controller
+	 * interferes with D+/D- QC3.0 negotiation by trying PD and
+	 * grabbing D+/D- control away from the charger IC.
+	 * Charge path works via PM8150B charger with uUSB factory mode.
+	 */
+	status = "disabled";
 
 	connector {
 		compatible = "usb-c-connector";
@@ -679,10 +719,18 @@
 		source-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_DUAL_ROLE |
 			       PDO_FIXED_USB_COMM | PDO_FIXED_DATA_SWAP)>;
 
+		/*
+		 * Advertise PD sink capabilities matching stock 27W hardware intent:
+		 * 5V/3A, 9V/3A, and PPS 5–11V@3A. Without SMB1390 charge pump,
+		 * PM8150B will typically settle around 9V × ~2–3A (~18–20W).
+		 * Xiaomi proprietary QC3→CP path still needs SMB1390 + HVDCP.
+		 */
 		sink-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_DUAL_ROLE |
-			       PDO_FIXED_USB_COMM | PDO_FIXED_DATA_SWAP)>;
+				      PDO_FIXED_USB_COMM | PDO_FIXED_DATA_SWAP)
+			     PDO_FIXED(9000, 3000, 0)
+			     PDO_PPS_APDO(5000, 11000, 3000)>;
 
-		op-sink-microwatt = <10000000>;
+		op-sink-microwatt = <15000000>;
 
 		ports {
 			#address-cells = <1>;
@@ -701,13 +749,17 @@
 &pm8150b_fg {
 	status = "okay";
 	monitored-battery = <&battery>;
-	power-supplies = <&pm8150b_charger>;
-	//power-supplies = <&ln8000_charger>;
+	power-supplies = <&pm8150b_charger>, <&smb1390>;
+};
+
+&usb_1_hsphy {
+	status = "okay";
 };
 
 &pm8150b_charger {
 	status = "okay";
 	monitored-battery = <&battery>;
+	dpdm-supply = <&dpdm_reg>;
 };
 
 &pm8150b_vbus {
@@ -783,6 +835,10 @@
 	linux,code = <KEY_VOLUMEDOWN>;
 };
 
+&qupv3_id_0 {
+	status = "okay";
+};
+
 &qupv3_id_1 {
 	status = "okay";
 };
@@ -793,22 +849,154 @@
 
 &remoteproc_adsp {
 	status = "okay";
-	firmware-name = "qcom/sm8150/Xiaomi/raphael/adsp.mbn";
+	firmware-name = "qcom/sm8150/Xiaomi/raphael/adsp.mdt";
 };
 
 &remoteproc_cdsp {
 	status = "okay";
-	firmware-name = "qcom/sm8150/Xiaomi/raphael/cdsp.mbn";
+	firmware-name = "qcom/sm8150/Xiaomi/raphael/cdsp.mdt";
 };
 
 &remoteproc_mpss {
 	status = "okay";
-	firmware-name = "qcom/sm8150/Xiaomi/raphael/modem.mbn";
+	firmware-name = "qcom/sm8150/Xiaomi/raphael/modem.mdt";
 };
 
 &remoteproc_slpi {
-	status = "disabled";
-	firmware-name = "qcom/sm8150/Xiaomi/raphael/slpi.mbn";
+	status = "okay";
+	firmware-name = "qcom/sm8150/Xiaomi/raphael/slpi_rp.mdt";
+
+	glink-edge {
+		fastrpc {
+			/*
+			 * Mainline SLPI FastRPC (emainline + Dylan Van Assche SDM845):
+			 * fastrpc_mem CMA + qcom,vmids + compute-cb@0 (no IOMMU).
+			 * NOT Android msm_fastrpc cb13-15 / adsprpc model.
+			 * Do NOT add dma-coherent on cb@0 (reboot loop).
+			 */
+			qcom,vmids = <QCOM_SCM_VMID_HLOS QCOM_SCM_VMID_MSS_MSA
+				      QCOM_SCM_VMID_SSC_Q6 QCOM_SCM_VMID_ADSP_Q6>;
+			memory-region = <&fastrpc_mem>;
+
+			/delete-node/ compute-cb@1;
+			/delete-node/ compute-cb@2;
+			/delete-node/ compute-cb@3;
+
+			compute-cb@0 {
+				compatible = "qcom,fastrpc-compute-cb";
+				reg = <0>;
+			};
+		};
+	};
+};
+
+&q6afedai {
+	dai@22 {
+		reg = <QUATERNARY_MI2S_RX>;
+		qcom,sd-lines = <0>;  /* Use SD0 (GPIO 139) for playback */
+	};
+};
+
+&q6asmdai {
+	dai@0 {
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA1>;
+	};
+
+	dai@1 {
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA2>;
+	};
+};
+
+&sound {
+	compatible = "qcom,sm8150-sndcard";
+	pinctrl-0 = <&quat_mi2s_active
+		&quat_mi2s_sd0_active
+		&quat_mi2s_sd1_active>;
+	pinctrl-names = "default";
+	model = "Raphael";
+
+	audio-routing = "RX_BIAS", "MCLK",
+		"AMIC1", "MIC BIAS3",
+		"AMIC3", "MIC BIAS4";
+
+	mm1-dai-link {
+		link-name = "MultiMedia1";
+		cpu {
+			sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA1>;
+		};
+	};
+
+	mm2-dai-link {
+		link-name = "MultiMedia2";
+		cpu {
+			sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA2>;
+		};
+	};
+
+	speaker-dai-link {
+		link-name = "Quaternary MI2S Playback";
+		cpu {
+			sound-dai = <&q6afedai QUATERNARY_MI2S_RX>;
+		};
+
+		platform {
+			sound-dai = <&q6routing>;
+		};
+
+		codec {
+			sound-dai = <&tfa9874>;
+		};
+	};
+
+	slimcap-dai-link {
+		link-name = "SLIM Capture 1";
+		cpu {
+			sound-dai = <&q6afedai SLIMBUS_0_TX>;
+		};
+
+		platform {
+			sound-dai = <&q6routing>;
+		};
+
+		codec {
+			sound-dai = <&wcd9340 1>; /* AIF1_CAP */
+		};
+	};
+
+	slim-playback-dai-link {
+		link-name = "SLIMBUS_0 Playback";
+		cpu {
+			sound-dai = <&q6afedai SLIMBUS_0_RX>;
+		};
+
+		platform {
+			sound-dai = <&q6routing>;
+		};
+
+		codec {
+			sound-dai = <&wcd9340 0>; /* AIF1_PB */
+		};
+	};
+};
+
+&wcd9340 {
+	reset-gpios = <&tlmm 143 GPIO_ACTIVE_HIGH>;
+	vdd-buck-sido-supply = <&vreg_s4a_1p8>;
+	vdd-buck-supply = <&vreg_s4a_1p8>;
+	vdd-tx-supply = <&vreg_s4a_1p8>;
+	vdd-rx-supply = <&vreg_s4a_1p8>;
+	vdd-io-supply = <&vreg_s4a_1p8>;
+
+	qcom,micbias1-microvolt = <1800000>;
+	qcom,micbias2-microvolt = <2750000>;
+	qcom,micbias3-microvolt = <1800000>;
+	qcom,micbias4-microvolt = <1800000>;
+
+	qcom,hphl-jack-type-normally-open;
+	qcom,ground-jack-type-normally-open;
+	qcom,mbhc-buttons-vthreshold-microvolt = <75000 150000 237000 500000 500000 500000 500000 500000>;
+	qcom,mbhc-headset-vthreshold-microvolt = <2600000>;
+	qcom,mbhc-headphone-vthreshold-microvolt = <50000>;
 };
 
 &tlmm {
@@ -1100,6 +1288,29 @@
         bias-disable;
         output-high;
     };
+
+    /* Speaker I2S pins */
+    quat_mi2s_active: quat-mi2s-active-state {
+		pins = "gpio137", "gpio138";
+		function = "qua_mi2s";
+		drive-strength = <8>;
+		bias-disable;
+		output-high;
+    };
+
+    quat_mi2s_sd0_active: quat-mi2s-sd0-active-state {
+		pins = "gpio139";
+		function = "qua_mi2s";
+		drive-strength = <8>;
+		bias-disable;
+    };
+
+    quat_mi2s_sd1_active: quat-mi2s-sd1-active-state {
+		pins = "gpio140";
+		function = "qua_mi2s";
+		drive-strength = <8>;
+		bias-disable;
+    };
 };
 
 &uart2 {
@@ -1168,6 +1379,9 @@
 	vdda33-supply = <&vdda_usb_hs_3p1>;
 	vdda18-supply = <&vdda_usb_hs_1p8>;
 	status = "okay";
+
+	dpdm_reg: qcom,dpdm-regulator {
+	};
 };
 
 &wifi {
@@ -1180,4 +1394,20 @@
 	qcom,calibration-variant = "Xiaomi_raphael";
 
 	status = "okay";
+};
+
+/*
+ * XBL leaves MDP scanning cont_splash_mem.  dispcc probe must not reprogram
+ * PLLs or enable MDP clock gating until DRM_MSM takes over (see driver).
+ *
+ * The driver also holds dispcc's runtime-PM (MMCX) vote across the splash
+ * window; raise the corner so the held vote alone keeps the MDP+DSI rail
+ * adequately powered until handoff.
+ */
+&dispcc {
+	qcom,boot-display-on;
+	required-opps = <&rpmhpd_opp_nom>;
+	interconnects = <&mmss_noc MASTER_MDP_PORT0 0 &mc_virt SLAVE_EBI_CH0 0>,
+			<&mmss_noc MASTER_MDP_PORT1 0 &mc_virt SLAVE_EBI_CH0 0>;
+	interconnect-names = "mdp0-mem", "mdp1-mem";
 };
