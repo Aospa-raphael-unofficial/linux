@@ -63,6 +63,15 @@ static const struct venus_format venc_formats[] = {
 	},
 };
 
+static u32 venc_get_framesz(struct venus_inst *inst, u32 pixfmt,
+			    u32 width, u32 height)
+{
+	if (IS_IRIS1(inst->core) && pixfmt == V4L2_PIX_FMT_NV12)
+		height = ALIGN(height, 32);
+
+	return venus_helper_get_framesz(pixfmt, width, height);
+}
+
 static const struct venus_format *
 find_format(struct venus_inst *inst, u32 pixfmt, u32 type)
 {
@@ -201,17 +210,8 @@ venc_try_fmt_common(struct venus_inst *inst, struct v4l2_format *f)
 			      frame_height_max(inst));
 
 	/*
-	 * Linear NV12 uses Venus scanline padding. With a single V4L2 plane,
-	 * generic userspace has no standard field for the Y-plane scanline count.
-	 * Expose the 32-line-aligned raw height so the UV plane starts where the
-	 * firmware expects it; this matches the Android-Q Venus contract.
-	 */
-	if (f->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE)
-		pixmp->height = ALIGN(pixmp->height, 32);
-
-	/*
-	 * Keep the visible width; horizontal padding remains in bytesperline.
-	 * Compressed CAPTURE dimensions stay at the visible coded size.
+	 * Keep V4L2 dimensions visible. IRIS1 still allocates the Venus scanline
+	 * extent and repacks MMAP/USERPTR NV12 before it reaches firmware.
 	 */
 	pixmp->width = ALIGN(pixmp->width, 2);
 	pixmp->height = ALIGN(pixmp->height, 2);
@@ -221,9 +221,8 @@ venc_try_fmt_common(struct venus_inst *inst, struct v4l2_format *f)
 	pixmp->num_planes = fmt->num_planes;
 	pixmp->flags = 0;
 
-	sizeimage = venus_helper_get_framesz(pixmp->pixelformat,
-					     pixmp->width,
-					     pixmp->height);
+	sizeimage = venc_get_framesz(inst, pixmp->pixelformat,
+				     pixmp->width, pixmp->height);
 	pfmt[0].sizeimage = max(ALIGN(pfmt[0].sizeimage, SZ_4K), sizeimage);
 
 	if (f->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE)
@@ -580,9 +579,20 @@ venc_encoder_cmd(struct file *file, void *fh, struct v4l2_encoder_cmd *cmd)
 		if (!(inst->streamon_out && inst->streamon_cap))
 			goto unlock;
 
+		if (!inst->eos_buf_va) {
+			inst->eos_buf_va = dma_alloc_coherent(inst->core->dev, SZ_4K,
+							      &inst->eos_buf_da,
+							      GFP_KERNEL);
+			if (!inst->eos_buf_va) {
+				ret = -ENOMEM;
+				goto unlock;
+			}
+		}
+
 		fdata.buffer_type = HFI_BUFFER_INPUT;
 		fdata.flags |= HFI_BUFFERFLAG_EOS;
-		fdata.device_addr = 0xdeadb000;
+		fdata.alloc_len = SZ_4K;
+		fdata.device_addr = inst->eos_buf_da;
 
 		ret = hfi_session_process_buf(inst, &fdata);
 
@@ -1221,7 +1231,7 @@ static int venc_queue_setup_iris1(struct vb2_queue *q, unsigned int *num_buffers
 {
 	struct venus_inst *inst = vb2_get_drv_priv(q);
 	struct hfi_buffer_requirements req;
-	unsigned int minimum, size, existing = vb2_get_num_buffers(q);
+	unsigned int minimum, size, raw_size, existing = vb2_get_num_buffers(q);
 	bool input = V4L2_TYPE_IS_OUTPUT(q->type);
 	u32 type = input ? HFI_BUFFER_INPUT : HFI_BUFFER_OUTPUT;
 	int ret, put_ret;
@@ -1251,10 +1261,11 @@ static int venc_queue_setup_iris1(struct vb2_queue *q, unsigned int *num_buffers
 	}
 
 	size = req.size;
-	if (input)
-		size = max(size, venus_helper_get_framesz(inst->fmt_out->pixfmt,
-							  inst->out_width,
-							  inst->out_height));
+	if (input) {
+		raw_size = venc_get_framesz(inst, inst->fmt_out->pixfmt,
+					    inst->out_width, inst->out_height);
+		size = max(size, raw_size);
+	}
 	/*
 	 * SM8150 downstream treats the encoder compressed-output requirement
 	 * returned by firmware as authoritative. Do not inflate CAPTURE with
@@ -1587,6 +1598,9 @@ static void venc_vb2_buf_queue(struct vb2_buffer *vb)
 {
 	struct venus_inst *inst = vb2_get_drv_priv(vb->vb2_queue);
 	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
+	u32 stride, visible_y, padded_y, visible_uv, required;
+	u32 visible_height, padded_height, uv_scanlines;
+	u8 *vaddr;
 
 	venc_pm_get_put(inst);
 
@@ -1599,6 +1613,36 @@ static void venc_vb2_buf_queue(struct vb2_buffer *vb)
 		v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_DONE);
 		mutex_unlock(&inst->lock);
 		return;
+	}
+
+	if (IS_IRIS1(inst->core) &&
+	    vb->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE &&
+	    inst->fmt_out->pixfmt == V4L2_PIX_FMT_NV12 &&
+	    vb->memory != VB2_MEMORY_DMABUF) {
+		visible_height = inst->out_height;
+		padded_height = ALIGN(visible_height, 32);
+		if (visible_height != padded_height) {
+			stride = ALIGN(inst->out_width, 128);
+			visible_y = stride * visible_height;
+			padded_y = stride * padded_height;
+			visible_uv = stride * DIV_ROUND_UP(visible_height, 2);
+			uv_scanlines = ALIGN(DIV_ROUND_UP(visible_height, 2), 16);
+			required = padded_y + stride * uv_scanlines;
+			vaddr = vb2_plane_vaddr(vb, 0);
+
+			if (!vaddr || vb2_plane_size(vb, 0) < required ||
+			    vb2_get_plane_payload(vb, 0) < visible_y + visible_uv) {
+				v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_ERROR);
+				mutex_unlock(&inst->lock);
+				return;
+			}
+
+			memmove(vaddr + padded_y, vaddr + visible_y, visible_uv);
+			memset(vaddr + visible_y, 0, padded_y - visible_y);
+			memset(vaddr + padded_y + visible_uv, 0,
+			       required - padded_y - visible_uv);
+			vb2_set_plane_payload(vb, 0, required);
+		}
 	}
 
 	venus_helper_vb2_buf_queue(vb);
@@ -1817,6 +1861,9 @@ static int venc_close(struct file *file)
 
 	venc_pm_get(inst);
 	venus_close_common(inst, file);
+	if (inst->eos_buf_va)
+		dma_free_coherent(inst->core->dev, SZ_4K, inst->eos_buf_va,
+				  inst->eos_buf_da);
 	inst->enc_state = VENUS_ENC_STATE_DEINIT;
 	venc_pm_put(inst, false);
 
