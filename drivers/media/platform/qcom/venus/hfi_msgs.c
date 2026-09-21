@@ -19,6 +19,18 @@
 #define VER_STR_SZ		128
 #define SMEM_IMG_OFFSET_VENUS	(14 * 128)
 
+static u32 normalize_bit_depth(u32 packed)
+{
+	u32 luma = packed & 0xffff;
+	u32 chroma = packed >> 16;
+
+	if (luma == HFI_BITDEPTH_9 || luma == HFI_BITDEPTH_10 ||
+	    chroma == HFI_BITDEPTH_9 || chroma == HFI_BITDEPTH_10)
+		return VIDC_BITDEPTH_10;
+
+	return VIDC_BITDEPTH_8;
+}
+
 static void event_seq_changed(struct venus_core *core, struct venus_inst *inst,
 			      struct hfi_msg_event_notify_pkt *pkt)
 {
@@ -33,6 +45,7 @@ static void event_seq_changed(struct venus_core *core, struct venus_inst *inst,
 	struct hfi_buffer_requirements *bufreq;
 	struct hfi_extradata_input_crop *crop;
 	struct hfi_dpb_counts *dpb_count;
+	struct hfi_dpb_counts_4xx *dpb_count_4xx;
 	u32 ptype, rem_bytes;
 	u32 size_read = 0;
 	u8 *data_ptr;
@@ -90,7 +103,7 @@ static void event_seq_changed(struct venus_core *core, struct venus_inst *inst,
 				goto error;
 
 			pixel_depth = (struct hfi_bit_depth *)data_ptr;
-			event.bit_depth = pixel_depth->bit_depth;
+			event.bit_depth = normalize_bit_depth(pixel_depth->bit_depth);
 			size_read = sizeof(struct hfi_bit_depth);
 			break;
 		case HFI_PROPERTY_PARAM_VDEC_PIC_STRUCT:
@@ -121,7 +134,8 @@ static void event_seq_changed(struct venus_core *core, struct venus_inst *inst,
 				goto error;
 
 			bufreq = (struct hfi_buffer_requirements *)data_ptr;
-			event.buf_count = hfi_bufreq_get_count_min(bufreq, ver);
+			event.buf_count = max(event.buf_count,
+					      hfi_bufreq_get_count_min(bufreq, ver));
 			size_read = sizeof(struct hfi_buffer_requirements);
 			break;
 		case HFI_INDEX_EXTRADATA_INPUT_CROP:
@@ -140,6 +154,10 @@ static void event_seq_changed(struct venus_core *core, struct venus_inst *inst,
 			    rem_bytes < sizeof(struct hfi_dpb_counts_4xx))
 				goto error;
 
+			dpb_count_4xx = (struct hfi_dpb_counts_4xx *)data_ptr;
+			event.max_dpb_count = dpb_count_4xx->max_dpb_count;
+			event.max_ref_count = dpb_count_4xx->max_ref_count;
+			event.max_dec_buffering = dpb_count_4xx->max_dec_buffering;
 			size_read = sizeof(struct hfi_dpb_counts_4xx);
 			break;
 		case HFI_PROPERTY_PARAM_VDEC_DPB_COUNTS:
@@ -147,7 +165,10 @@ static void event_seq_changed(struct venus_core *core, struct venus_inst *inst,
 				goto error;
 
 			dpb_count = (struct hfi_dpb_counts *)data_ptr;
-			event.buf_count = dpb_count->fw_min_cnt;
+			event.max_dpb_count = dpb_count->max_dpb_count;
+			event.max_ref_count = dpb_count->max_ref_frames;
+			event.max_dec_buffering = dpb_count->max_dec_buffering;
+			event.buf_count = max(event.buf_count, dpb_count->fw_min_cnt);
 			size_read = sizeof(struct hfi_dpb_counts);
 			break;
 		default:

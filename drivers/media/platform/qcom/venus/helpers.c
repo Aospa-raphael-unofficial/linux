@@ -1053,13 +1053,16 @@ int venus_helper_get_bufreq(struct venus_inst *inst, u32 type,
 	u32 ptype = HFI_PROPERTY_CONFIG_BUFFER_REQUIREMENTS;
 	enum hfi_version ver = inst->core->res->hfi_version;
 	union hfi_get_property hprop;
+	u32 event_min = 0;
 	unsigned int i;
 	int ret;
 
 	memset(req, 0, sizeof(*req));
 
-	if (type == HFI_BUFFER_OUTPUT || type == HFI_BUFFER_OUTPUT2)
+	if (type == HFI_BUFFER_OUTPUT || type == HFI_BUFFER_OUTPUT2) {
+		event_min = inst->fw_min_cnt;
 		hfi_bufreq_set_count_min(req, ver, inst->fw_min_cnt);
+	}
 
 	ret = platform_get_bufreq(inst, type, req);
 	if (!ret) {
@@ -1079,6 +1082,8 @@ int venus_helper_get_bufreq(struct venus_inst *inst, u32 type,
 			continue;
 
 		memcpy(req, &hprop.bufreq[i], sizeof(*req));
+		if (event_min > hfi_bufreq_get_count_min(req, ver))
+			hfi_bufreq_set_count_min(req, ver, event_min);
 		ret = 0;
 		break;
 	}

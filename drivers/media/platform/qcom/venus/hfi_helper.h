@@ -931,6 +931,10 @@ struct hfi_h264_vui_timing_info {
 	u32 time_scale;
 };
 
+#define HFI_BITDEPTH_8		0
+#define HFI_BITDEPTH_9		1
+#define HFI_BITDEPTH_10		2
+
 #define VIDC_BITDEPTH_8		0x00000
 #define VIDC_BITDEPTH_10	0x20002
 
