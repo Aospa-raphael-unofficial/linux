@@ -581,6 +581,8 @@
 		vddio-supply = <&vreg_tp_1p8>;
 		interrupts-extended = <&tlmm 122 IRQ_TYPE_LEVEL_LOW>;
 		reset-gpios = <&tlmm 54 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&tp_active>;
 		touchscreen-size-x = <1080>;
 		touchscreen-size-y = <2340>;
 	};
