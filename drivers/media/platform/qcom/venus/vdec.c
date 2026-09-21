@@ -1708,9 +1708,24 @@ static void vdec_event_change(struct venus_inst *inst,
 	}
 
 	inst->fw_min_cnt = ev_data->buf_count;
-	/* overwriting this to 11 for vp9 due to fw bug */
-	if (inst->hfi_codec == HFI_VIDEO_CODEC_VP9)
-		inst->fw_min_cnt = 11;
+	if (IS_IRIS1(inst->core)) {
+		switch (inst->hfi_codec) {
+		case HFI_VIDEO_CODEC_MPEG2:
+		case HFI_VIDEO_CODEC_VP8:
+			inst->fw_min_cnt = max(inst->fw_min_cnt, 6U);
+			break;
+		case HFI_VIDEO_CODEC_VP9:
+			/* The IRIS1 firmware can under-report the VP9 minimum. */
+			inst->fw_min_cnt = max(inst->fw_min_cnt, 11U);
+			break;
+		case HFI_VIDEO_CODEC_H264:
+		case HFI_VIDEO_CODEC_HEVC:
+			inst->fw_min_cnt = max(inst->fw_min_cnt, 8U);
+			break;
+		default:
+			break;
+		}
+	}
 
 	inst->out_width = ev_data->width;
 	inst->out_height = ev_data->height;
