@@ -71,6 +71,9 @@ struct hfi_event_data {
 	u32 colour_space;
 	u32 entropy_mode;
 	u32 buf_count;
+	u32 max_dpb_count;
+	u32 max_ref_count;
+	u32 max_dec_buffering;
 	struct {
 		u32 left, top;
 		u32 width, height;
