@@ -8,6 +8,7 @@
 #define __VENUS_CORE_H_
 
 #include <linux/bitops.h>
+#include <linux/dma-mapping.h>
 #include <linux/list.h>
 #include <media/videobuf2-v4l2.h>
 #include <media/v4l2-ctrls.h>
@@ -461,6 +462,8 @@ enum venus_inst_modes {
  * @pic_struct:		bitstream progressive vs interlaced
  * @next_buf_last: a flag to mark next queued capture buffer as last
  * @drain_active:	Drain sequence is in progress
+ * @eos_buf_va:	virtual address of the encoder EOS input buffer
+ * @eos_buf_da:	device address of the encoder EOS input buffer
  * @flags:	bitmask flags describing current instance mode
  * @dpb_ids:	DPB buffer ID's
  */
@@ -532,6 +535,8 @@ struct venus_inst {
 	unsigned int pic_struct;
 	bool next_buf_last;
 	bool drain_active;
+	void *eos_buf_va;
+	dma_addr_t eos_buf_da;
 	enum venus_inst_modes flags;
 	struct ida dpb_ids;
 };
