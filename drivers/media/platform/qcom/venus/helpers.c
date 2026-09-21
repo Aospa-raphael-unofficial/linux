@@ -1059,7 +1059,8 @@ int venus_helper_get_bufreq(struct venus_inst *inst, u32 type,
 
 	memset(req, 0, sizeof(*req));
 
-	if (type == HFI_BUFFER_OUTPUT || type == HFI_BUFFER_OUTPUT2) {
+	if (inst->session_type == VIDC_SESSION_TYPE_DEC &&
+	    (type == HFI_BUFFER_OUTPUT || type == HFI_BUFFER_OUTPUT2)) {
 		event_min = inst->fw_min_cnt;
 		hfi_bufreq_set_count_min(req, ver, inst->fw_min_cnt);
 	}
