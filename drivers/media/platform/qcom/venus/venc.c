@@ -1582,6 +1582,9 @@ static int venc_start_streaming(struct vb2_queue *q, unsigned int count)
 
 	inst->sequence_cap = 0;
 	inst->sequence_out = 0;
+	kfree(inst->enc_header);
+	inst->enc_header = NULL;
+	inst->enc_header_size = 0;
 
 	stage = "pm-get";
 	ret = venc_pm_get(inst);
@@ -1764,6 +1767,7 @@ static void venc_buf_done(struct venus_inst *inst, unsigned int buf_type,
 {
 	struct vb2_v4l2_buffer *vbuf;
 	struct vb2_buffer *vb;
+	u8 *header, *vaddr;
 	unsigned int type;
 
 	venc_pm_touch(inst);
@@ -1789,6 +1793,40 @@ static void venc_buf_done(struct venus_inst *inst, unsigned int buf_type,
 			v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_ERROR);
 			return;
 		}
+
+		vaddr = vb2_plane_vaddr(vb, 0);
+		if (IS_IRIS1(inst->core) &&
+		    (hfi_flags & HFI_BUFFERFLAG_CODECCONFIG) &&
+		    !(flags & (V4L2_BUF_FLAG_KEYFRAME |
+			       V4L2_BUF_FLAG_PFRAME |
+			       V4L2_BUF_FLAG_BFRAME)) &&
+		    bytesused && vaddr) {
+			header = kmemdup(vaddr + data_offset, bytesused, GFP_ATOMIC);
+			if (header) {
+				kfree(inst->enc_header);
+				inst->enc_header = header;
+				inst->enc_header_size = bytesused;
+				vb2_set_plane_payload(vb, 0, 0);
+				vb->planes[0].data_offset = 0;
+				v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_DONE);
+				return;
+			}
+		}
+
+		if (IS_IRIS1(inst->core) && inst->enc_header_size &&
+		    bytesused && vaddr &&
+		    inst->enc_header_size <=
+		    vb2_plane_size(vb, 0) - data_offset - bytesused) {
+			memmove(vaddr + data_offset + inst->enc_header_size,
+				vaddr + data_offset, bytesused);
+			memcpy(vaddr + data_offset, inst->enc_header,
+			       inst->enc_header_size);
+			bytesused += inst->enc_header_size;
+			kfree(inst->enc_header);
+			inst->enc_header = NULL;
+			inst->enc_header_size = 0;
+		}
+
 		vb2_set_plane_payload(vb, 0, bytesused + data_offset);
 
 		vb->planes[0].data_offset = data_offset;
@@ -1962,6 +2000,7 @@ static int venc_close(struct file *file)
 	if (inst->eos_buf_va)
 		dma_free_coherent(inst->core->dev, SZ_4K, inst->eos_buf_va,
 				  inst->eos_buf_da);
+	kfree(inst->enc_header);
 	inst->enc_state = VENUS_ENC_STATE_DEINIT;
 	venc_pm_put(inst, false);
 
