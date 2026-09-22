@@ -1491,34 +1491,20 @@ unlock:
 
 static void vdec_session_release(struct venus_inst *inst)
 {
-	struct venus_core *core = inst->core;
-	int ret, abort = 0;
+	int ret;
 
 	vdec_pm_get(inst);
 
 	mutex_lock(&inst->lock);
 	inst->codec_state = VENUS_DEC_STATE_DEINIT;
 
-	ret = hfi_session_stop(inst);
-	abort = (ret && ret != -EINVAL) ? 1 : 0;
-	ret = hfi_session_unload_res(inst);
-	abort = (ret && ret != -EINVAL) ? 1 : 0;
-	ret = venus_helper_unregister_bufs(inst);
-	abort = (ret && ret != -EINVAL) ? 1 : 0;
-	ret = venus_helper_intbufs_free(inst);
-	abort = (ret && ret != -EINVAL) ? 1 : 0;
-	ret = hfi_session_deinit(inst);
-	abort = (ret && ret != -EINVAL) ? 1 : 0;
-
-	if (inst->session_error || test_bit(0, &core->sys_error))
-		abort = 1;
-
-	if (abort)
-		hfi_session_abort(inst);
+	ret = venus_helper_session_release(inst);
+	if (ret)
+		dev_err(inst->core->dev,
+			"decoder session cleanup incomplete ret=%d\n", ret);
 
 	venus_helper_free_dpb_bufs(inst);
 	venus_pm_load_scale(inst);
-	INIT_LIST_HEAD(&inst->registeredbufs);
 	mutex_unlock(&inst->lock);
 
 	venus_pm_release_core(inst);
@@ -1977,6 +1963,8 @@ static int vdec_close(struct file *file)
 
 	vdec_pm_get(inst);
 	cancel_work_sync(&inst->delayed_process_work);
+	if (!inst->buf_count)
+		vdec_session_release(inst);
 	venus_close_common(inst, file);
 	ida_destroy(&inst->dpb_ids);
 	vdec_pm_put(inst, false);
