@@ -1453,10 +1453,15 @@ put_power:
 static int venc_buf_init(struct vb2_buffer *vb)
 {
 	struct venus_inst *inst = vb2_get_drv_priv(vb->vb2_queue);
+	int ret;
 
 	inst->buf_count++;
 
-	return venus_helper_vb2_buf_init(vb);
+	ret = venus_helper_vb2_buf_init(vb);
+	if (ret)
+		inst->buf_count--;
+
+	return ret;
 }
 
 static void venc_release_session(struct venus_inst *inst)
@@ -1466,15 +1471,13 @@ static void venc_release_session(struct venus_inst *inst)
 	venc_pm_get(inst);
 
 	mutex_lock(&inst->lock);
-
-	ret = hfi_session_deinit(inst);
-	if (ret || inst->session_error)
-		hfi_session_abort(inst);
-
+	ret = venus_helper_session_release(inst);
+	if (ret)
+		dev_err(inst->core->dev,
+			"encoder session cleanup incomplete ret=%d\n", ret);
 	mutex_unlock(&inst->lock);
 
 	venus_pm_load_scale(inst);
-	INIT_LIST_HEAD(&inst->registeredbufs);
 	venus_pm_release_core(inst);
 
 	venc_pm_put(inst, false);
@@ -1996,6 +1999,8 @@ static int venc_close(struct file *file)
 	struct venus_inst *inst = to_inst(file);
 
 	venc_pm_get(inst);
+	if (!inst->buf_count)
+		venc_release_session(inst);
 	venus_close_common(inst, file);
 	if (inst->eos_buf_va)
 		dma_free_coherent(inst->core->dev, SZ_4K, inst->eos_buf_va,
