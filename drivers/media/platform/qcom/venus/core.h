@@ -464,6 +464,8 @@ enum venus_inst_modes {
  * @drain_active:	Drain sequence is in progress
  * @eos_buf_va:	virtual address of the encoder EOS input buffer
  * @eos_buf_da:	device address of the encoder EOS input buffer
+ * @enc_header:	cached encoder codec configuration
+ * @enc_header_size:	size of the cached encoder codec configuration
  * @flags:	bitmask flags describing current instance mode
  * @dpb_ids:	DPB buffer ID's
  */
@@ -537,6 +539,8 @@ struct venus_inst {
 	bool drain_active;
 	void *eos_buf_va;
 	dma_addr_t eos_buf_da;
+	u8 *enc_header;
+	u32 enc_header_size;
 	enum venus_inst_modes flags;
 	struct ida dpb_ids;
 };
