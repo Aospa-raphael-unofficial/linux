@@ -1674,26 +1674,47 @@ static int venc_repack_nv12_iris1(struct venus_inst *inst,
 {
 	u32 width = inst->out_width;
 	u32 height = inst->out_height;
-	u32 src_stride = width;
 	u32 dst_stride = ALIGN(width, 128);
 	u32 y_scanlines = ALIGN(height, 32);
 	u32 uv_lines = DIV_ROUND_UP(height, 2);
 	u32 uv_scanlines = ALIGN(uv_lines, 16);
-	u32 src_y = src_stride * height;
-	u32 src_uv = src_stride * uv_lines;
+	u32 visible_lines = height + uv_lines;
+	u32 payload = vb2_get_plane_payload(vb, 0);
+	u32 src_stride = width;
+	u32 src_y, src_uv;
 	u32 dst_uv = dst_stride * y_scanlines;
 	u32 required = dst_uv + dst_stride * uv_scanlines;
 	u8 *vaddr = vb2_plane_vaddr(vb, 0);
 	int row;
 
+	/*
+	 * FFmpeg's V4L2 M2M encoder copies each software-frame plane with its
+	 * AVFrame linesize, then concatenates the planes in the single V4L2
+	 * buffer.  For widths which are not naturally aligned this means that
+	 * MMAP bytesused describes a source stride larger than the advertised
+	 * visible bytesperline.  Rawvideo clients, on the other hand, submit a
+	 * tightly packed frame.  Recover either layout from the exact payload
+	 * extent before converting it to the IRIS1 layout.
+	 */
+	if (payload >= width * visible_lines &&
+	    !(payload % visible_lines)) {
+		u32 candidate = payload / visible_lines;
+
+		if (candidate >= width && candidate <= dst_stride)
+			src_stride = candidate;
+	}
+
+	src_y = src_stride * height;
+	src_uv = src_stride * uv_lines;
+
 	if (!vaddr || vb2_plane_size(vb, 0) < required ||
-	    vb2_get_plane_payload(vb, 0) < src_y + src_uv)
+	    payload < src_y + src_uv)
 		return -EINVAL;
 
 	/*
-	 * Both planes grow towards higher addresses.  Move chroma first and
-	 * walk each plane backwards so expanding a row cannot overwrite source
-	 * bytes which have not been copied yet.
+	 * The IRIS1 destination stride and scanline counts never shrink the
+	 * accepted source layout.  Move chroma first and walk both planes
+	 * backwards so an in-place expansion cannot overwrite unread data.
 	 */
 	for (row = (int)uv_lines - 1; row >= 0; row--) {
 		memmove(vaddr + dst_uv + row * dst_stride,
