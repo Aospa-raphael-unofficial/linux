@@ -1491,34 +1491,20 @@ unlock:
 
 static void vdec_session_release(struct venus_inst *inst)
 {
-	struct venus_core *core = inst->core;
-	int ret, abort = 0;
+	int ret;
 
 	vdec_pm_get(inst);
 
 	mutex_lock(&inst->lock);
 	inst->codec_state = VENUS_DEC_STATE_DEINIT;
 
-	ret = hfi_session_stop(inst);
-	abort = (ret && ret != -EINVAL) ? 1 : 0;
-	ret = hfi_session_unload_res(inst);
-	abort = (ret && ret != -EINVAL) ? 1 : 0;
-	ret = venus_helper_unregister_bufs(inst);
-	abort = (ret && ret != -EINVAL) ? 1 : 0;
-	ret = venus_helper_intbufs_free(inst);
-	abort = (ret && ret != -EINVAL) ? 1 : 0;
-	ret = hfi_session_deinit(inst);
-	abort = (ret && ret != -EINVAL) ? 1 : 0;
-
-	if (inst->session_error || test_bit(0, &core->sys_error))
-		abort = 1;
-
-	if (abort)
-		hfi_session_abort(inst);
+	ret = venus_helper_session_release(inst);
+	if (ret)
+		dev_err(inst->core->dev,
+			"decoder session cleanup incomplete ret=%d\n", ret);
 
 	venus_helper_free_dpb_bufs(inst);
 	venus_pm_load_scale(inst);
-	INIT_LIST_HEAD(&inst->registeredbufs);
 	mutex_unlock(&inst->lock);
 
 	venus_pm_release_core(inst);
@@ -1708,9 +1694,24 @@ static void vdec_event_change(struct venus_inst *inst,
 	}
 
 	inst->fw_min_cnt = ev_data->buf_count;
-	/* overwriting this to 11 for vp9 due to fw bug */
-	if (inst->hfi_codec == HFI_VIDEO_CODEC_VP9)
-		inst->fw_min_cnt = 11;
+	if (IS_IRIS1(inst->core)) {
+		switch (inst->hfi_codec) {
+		case HFI_VIDEO_CODEC_MPEG2:
+		case HFI_VIDEO_CODEC_VP8:
+			inst->fw_min_cnt = max(inst->fw_min_cnt, 6U);
+			break;
+		case HFI_VIDEO_CODEC_VP9:
+			/* The IRIS1 firmware can under-report the VP9 minimum. */
+			inst->fw_min_cnt = max(inst->fw_min_cnt, 11U);
+			break;
+		case HFI_VIDEO_CODEC_H264:
+		case HFI_VIDEO_CODEC_HEVC:
+			inst->fw_min_cnt = max(inst->fw_min_cnt, 8U);
+			break;
+		default:
+			break;
+		}
+	}
 
 	inst->out_width = ev_data->width;
 	inst->out_height = ev_data->height;
@@ -1962,6 +1963,8 @@ static int vdec_close(struct file *file)
 
 	vdec_pm_get(inst);
 	cancel_work_sync(&inst->delayed_process_work);
+	if (!inst->buf_count)
+		vdec_session_release(inst);
 	venus_close_common(inst, file);
 	ida_destroy(&inst->dpb_ids);
 	vdec_pm_put(inst, false);

@@ -498,14 +498,14 @@ static int intbufs_set_buffer(struct venus_inst *inst, u32 type)
 	return intbufs_set_buffer_req(inst, &bufreq);
 }
 
-static int intbufs_unset_buffers(struct venus_inst *inst)
+static int intbufs_unset_buffers(struct venus_inst *inst, bool force)
 {
 	struct hfi_buffer_desc bd = {0};
 	struct intbuf *buf, *n;
 	int ret, err = 0;
 
 	list_for_each_entry_safe(buf, n, &inst->internalbufs, list) {
-		if (buf->hfi_registered) {
+		if (buf->hfi_registered && !force) {
 			bd.buffer_size = buf->size;
 			bd.buffer_type = buf->type;
 			bd.num_buffers = 1;
@@ -520,6 +520,7 @@ static int intbufs_unset_buffers(struct venus_inst *inst)
 			buf->hfi_registered = false;
 		}
 
+		buf->hfi_registered = false;
 		ret = intbuf_free_memory(inst, buf);
 		if (ret) {
 			err = ret;
@@ -578,61 +579,64 @@ static int intbufs_validate_queue(struct venus_inst *inst,
 	struct vb2_buffer *vb;
 	struct hfi_buffer_requirements counts;
 	unsigned int count, minimum, i;
+	u32 min_fw, min_host;
 
 	req = intbufs_find_req(snapshot, V4L2_TYPE_IS_OUTPUT(type) ?
 			       HFI_BUFFER_INPUT : HFI_BUFFER_OUTPUT);
-	if (!q || !req)
+	if (!q || !req) {
+		dev_err(inst->core->dev,
+			"IRIS1 queue contract missing type=%u q=%p req=%p\n",
+			type, q, req);
 		return -EINVAL;
+	}
 
 	counts = *req;
 	count = vb2_get_num_buffers(q);
-	minimum = max3(req->count_actual,
-		       hfi_bufreq_get_count_min(&counts,
-					HFI_VERSION_4XX),
-		       hfi_bufreq_get_count_min_host(&counts,
-					     HFI_VERSION_4XX));
-	if (!req->size || !minimum || count < minimum)
+	min_fw = hfi_bufreq_get_count_min(&counts, HFI_VERSION_4XX);
+	min_host = hfi_bufreq_get_count_min_host(&counts, HFI_VERSION_4XX);
+	minimum = max3(req->count_actual, min_fw, min_host);
+	if (!req->size || !minimum || count < minimum) {
+		dev_err(inst->core->dev,
+			"IRIS1 queue contract type=%u hfi=%#x size=%u count=%u actual=%u min=%u host=%u\n",
+			type, req->type, req->size, count, req->count_actual,
+			min_fw, min_host);
 		return -EINVAL;
+	}
 
 	for (i = 0; i < q->max_num_buffers; i++) {
 		vb = vb2_get_buffer(q, i);
-		if (vb && vb2_plane_size(vb, 0) < req->size)
+		if (vb && vb2_plane_size(vb, 0) < req->size) {
+			dev_err(inst->core->dev,
+				"IRIS1 queue extent type=%u hfi=%#x index=%u plane=%lu required=%u\n",
+				type, req->type, i, vb2_plane_size(vb, 0),
+				req->size);
 			return -EINVAL;
+		}
 	}
 
 	return 0;
 }
 
-static int intbufs_validate_snapshot(const union hfi_get_property *snapshot)
+static int intbufs_validate_snapshot(struct venus_inst *inst,
+				     const union hfi_get_property *snapshot)
 {
-	const struct hfi_buffer_requirements *req;
 	unsigned int i, j;
-	u32 minimum;
-	struct hfi_buffer_requirements counts;
 
 	/* Reject ambiguous replies before handing any internal memory to FW. */
 	for (i = 0; i < HFI_BUFFER_TYPE_MAX; i++) {
 		if (!snapshot->bufreq[i].type)
 			continue;
-		for (j = i + 1; j < HFI_BUFFER_TYPE_MAX; j++)
-			if (snapshot->bufreq[i].type == snapshot->bufreq[j].type)
-				return -EINVAL;
-	}
-
-	for (i = 0; i < ARRAY_SIZE(intbuf_types_4xx); i++) {
-		req = intbufs_find_req(snapshot, intbuf_types_4xx[i]);
-		/* An absent entry or zero size is a genuinely optional buffer. */
-		if (!req || !req->size)
-			continue;
-
-		counts = *req;
-		minimum = max(hfi_bufreq_get_count_min(&counts,
-						      HFI_VERSION_4XX),
-			      hfi_bufreq_get_count_min_host(&counts,
-							   HFI_VERSION_4XX));
-		if (!req->count_actual || req->count_actual < minimum)
+		for (j = i + 1; j < HFI_BUFFER_TYPE_MAX; j++) {
+			if (snapshot->bufreq[i].type != snapshot->bufreq[j].type)
+				continue;
+			dev_err(inst->core->dev,
+				"IRIS1 duplicate requirement type=%#x slots=%u/%u\n",
+				snapshot->bufreq[i].type, i, j);
 			return -EINVAL;
+		}
 	}
+
+	/* Internal buffers follow firmware count_actual, as in downstream. */
 
 	return 0;
 }
@@ -659,7 +663,7 @@ static int intbufs_alloc_iris1_encoder(struct venus_inst *inst)
 	if (ret)
 		return ret;
 
-	ret = intbufs_validate_snapshot(&snapshot);
+	ret = intbufs_validate_snapshot(inst, &snapshot);
 	if (ret)
 		return ret;
 
@@ -704,7 +708,7 @@ static int intbufs_alloc_iris1_encoder(struct venus_inst *inst)
 
 		ret = intbufs_set_buffer_req(inst, req);
 		if (ret) {
-			intbufs_unset_buffers(inst);
+			intbufs_unset_buffers(inst, false);
 			return ret;
 		}
 	}
@@ -741,16 +745,21 @@ int venus_helper_intbufs_alloc(struct venus_inst *inst)
 	return 0;
 
 error:
-	intbufs_unset_buffers(inst);
+	intbufs_unset_buffers(inst, false);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(venus_helper_intbufs_alloc);
 
 int venus_helper_intbufs_free(struct venus_inst *inst)
 {
-	return intbufs_unset_buffers(inst);
+	return intbufs_unset_buffers(inst, false);
 }
 EXPORT_SYMBOL_GPL(venus_helper_intbufs_free);
+
+static int venus_helper_intbufs_free_force(struct venus_inst *inst)
+{
+	return intbufs_unset_buffers(inst, true);
+}
 
 int venus_helper_intbufs_realloc(struct venus_inst *inst)
 {
@@ -1053,13 +1062,17 @@ int venus_helper_get_bufreq(struct venus_inst *inst, u32 type,
 	u32 ptype = HFI_PROPERTY_CONFIG_BUFFER_REQUIREMENTS;
 	enum hfi_version ver = inst->core->res->hfi_version;
 	union hfi_get_property hprop;
+	u32 event_min = 0;
 	unsigned int i;
 	int ret;
 
 	memset(req, 0, sizeof(*req));
 
-	if (type == HFI_BUFFER_OUTPUT || type == HFI_BUFFER_OUTPUT2)
+	if (inst->session_type == VIDC_SESSION_TYPE_DEC &&
+	    (type == HFI_BUFFER_OUTPUT || type == HFI_BUFFER_OUTPUT2)) {
+		event_min = inst->fw_min_cnt;
 		hfi_bufreq_set_count_min(req, ver, inst->fw_min_cnt);
+	}
 
 	ret = platform_get_bufreq(inst, type, req);
 	if (!ret) {
@@ -1079,6 +1092,8 @@ int venus_helper_get_bufreq(struct venus_inst *inst, u32 type,
 			continue;
 
 		memcpy(req, &hprop.bufreq[i], sizeof(*req));
+		if (event_min > hfi_bufreq_get_count_min(req, ver))
+			hfi_bufreq_set_count_min(req, ver, event_min);
 		ret = 0;
 		break;
 	}
@@ -2069,31 +2084,104 @@ void venus_helper_buffers_done(struct venus_inst *inst, unsigned int type,
 }
 EXPORT_SYMBOL_GPL(venus_helper_buffers_done);
 
+int venus_helper_session_release(struct venus_inst *inst)
+{
+	const char *stage = "idle";
+	int abort_ret, err = 0, ret;
+
+	if (inst->state == INST_UNINIT)
+		goto force_free;
+
+	if (inst->session_error || test_bit(0, &inst->core->sys_error)) {
+		err = -EIO;
+		stage = "session-error";
+		goto abort;
+	}
+
+	if (inst->state == INST_START) {
+		stage = "stop";
+		ret = hfi_session_stop(inst);
+		if (ret) {
+			err = ret;
+			goto abort;
+		}
+	}
+
+	if (inst->state == INST_LOAD_RESOURCES) {
+		err = -EINVAL;
+		stage = "loaded-without-start";
+		goto abort;
+	}
+
+	if (inst->state == INST_STOP) {
+		stage = "unload-resources";
+		ret = hfi_session_unload_res(inst);
+		if (ret) {
+			err = ret;
+			goto abort;
+		}
+	}
+
+	stage = "unregister-buffers";
+	ret = venus_helper_unregister_bufs(inst);
+	if (ret) {
+		err = ret;
+		goto abort;
+	}
+
+	stage = "free-internal-buffers";
+	ret = venus_helper_intbufs_free(inst);
+	if (ret) {
+		err = ret;
+		goto abort;
+	}
+
+	stage = "end";
+	ret = hfi_session_deinit(inst);
+	if (ret) {
+		err = ret;
+		goto abort;
+	}
+
+	INIT_LIST_HEAD(&inst->registeredbufs);
+	return 0;
+
+abort:
+	dev_err(inst->core->dev,
+		"session release failed stage=%s state=%u ret=%d, aborting\n",
+		stage, inst->state, err);
+	abort_ret = hfi_session_abort(inst);
+	if (!abort_ret)
+		inst->state = INST_UNINIT;
+	else if (!err)
+		err = abort_ret;
+
+force_free:
+	ret = venus_helper_intbufs_free_force(inst);
+	if (ret && !err)
+		err = ret;
+	INIT_LIST_HEAD(&inst->registeredbufs);
+
+	return err;
+}
+EXPORT_SYMBOL_GPL(venus_helper_session_release);
+
 void venus_helper_vb2_stop_streaming(struct vb2_queue *q)
 {
 	struct venus_inst *inst = vb2_get_drv_priv(q);
-	struct venus_core *core = inst->core;
 	int ret;
 
 	mutex_lock(&inst->lock);
 
 	if (inst->streamon_out & inst->streamon_cap) {
-		ret = hfi_session_stop(inst);
-		ret |= hfi_session_unload_res(inst);
-		ret |= venus_helper_unregister_bufs(inst);
-		ret |= venus_helper_intbufs_free(inst);
-		ret |= hfi_session_deinit(inst);
-
-		if (inst->session_error || test_bit(0, &core->sys_error))
-			ret = -EIO;
-
+		ret = venus_helper_session_release(inst);
 		if (ret)
-			hfi_session_abort(inst);
+			dev_err(inst->core->dev,
+				"session cleanup incomplete ret=%d\n", ret);
 
 		venus_helper_free_dpb_bufs(inst);
 
 		venus_pm_load_scale(inst);
-		INIT_LIST_HEAD(&inst->registeredbufs);
 	}
 
 	venus_helper_buffers_done(inst, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
