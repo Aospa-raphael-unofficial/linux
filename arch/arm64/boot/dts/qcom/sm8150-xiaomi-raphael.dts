@@ -11,6 +11,7 @@
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
 #include <dt-bindings/sound/qcom,q6asm.h>
+#include <dt-bindings/firmware/qcom,scm.h>
 #include <dt-bindings/usb/pd.h>
 #include "sm8150.dtsi"
 #include "sm8150-wcd9340.dtsi"
@@ -170,6 +171,13 @@
 		cdsp_mem: memory@99100000 {
 			no-map;
 			reg = <0x0 0x99100000 0x0 0x1400000>;
+		};
+
+		fastrpc_mem: fastrpc-shared-pool {
+			compatible = "shared-dma-pool";
+			alloc-ranges = <0x0 0x00000000 0x0 0xffffffff>;
+			size = <0x0 0x1000000>;
+			reusable;
 		};
 
 		cont_splash_mem: memory@9c000000 {
@@ -817,8 +825,15 @@
 };
 
 &remoteproc_slpi {
-	status = "disabled";
+	status = "okay";
 	firmware-name = "qcom/sm8150/Xiaomi/raphael/slpi.mbn";
+
+	glink-edge {
+		fastrpc {
+			memory-region = <&fastrpc_mem>;
+			qcom,vmids = <QCOM_SCM_VMID_HLOS QCOM_SCM_VMID_SSC_Q6 QCOM_SCM_VMID_ADSP_Q6>;
+		};
+	};
 };
 
 &q6afedai {
