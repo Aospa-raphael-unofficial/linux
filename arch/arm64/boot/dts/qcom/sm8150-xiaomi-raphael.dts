@@ -826,6 +826,29 @@
 &remoteproc_slpi {
 	status = "disabled";
 	firmware-name = "qcom/sm8150/Xiaomi/raphael/slpi.mbn";
+
+	glink-edge {
+		fastrpc {
+			/*
+			 * Mainline SLPI FastRPC (emainline + Dylan Van Assche SDM845):
+			 * fastrpc_mem CMA + qcom,vmids + compute-cb@0 (no IOMMU).
+			 * NOT Android msm_fastrpc cb13-15 / adsprpc model.
+			 * Do NOT add dma-coherent on cb@0 (reboot loop).
+			 */
+			qcom,vmids = <QCOM_SCM_VMID_HLOS QCOM_SCM_VMID_MSS_MSA
+				      QCOM_SCM_VMID_SSC_Q6 QCOM_SCM_VMID_ADSP_Q6>;
+			memory-region = <&fastrpc_mem>;
+
+			/delete-node/ compute-cb@1;
+			/delete-node/ compute-cb@2;
+			/delete-node/ compute-cb@3;
+
+			compute-cb@0 {
+				compatible = "qcom,fastrpc-compute-cb";
+				reg = <0>;
+			};
+		};
+	};
 };
 
 &q6afedai {
