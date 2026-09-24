@@ -36,6 +36,11 @@ static const struct venus_format venc_formats[] = {
 		.num_planes = 1,
 		.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
 	},
+	[VENUS_FMT_P010] = {
+		.pixfmt = V4L2_PIX_FMT_P010,
+		.num_planes = 1,
+		.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
+	},
 	[VENUS_FMT_H264] = {
 		.pixfmt = V4L2_PIX_FMT_H264,
 		.num_planes = 1,
@@ -63,9 +68,22 @@ static const struct venus_format venc_formats[] = {
 	},
 };
 
+static u32 venc_p010_stride_iris1(u32 width)
+{
+	return ALIGN(width * 2, 256);
+}
+
 static u32 venc_get_framesz(struct venus_inst *inst, u32 pixfmt,
 			    u32 width, u32 height)
 {
+	if (IS_IRIS1(inst->core) && pixfmt == V4L2_PIX_FMT_P010) {
+		u32 y_scanlines = ALIGN(height, 32);
+		u32 uv_scanlines = ALIGN(DIV_ROUND_UP(height, 2), 16);
+
+		return ALIGN(venc_p010_stride_iris1(width) *
+			     (y_scanlines + uv_scanlines), SZ_4K);
+	}
+
 	if (IS_IRIS1(inst->core) && pixfmt == V4L2_PIX_FMT_NV12)
 		height = ALIGN(height, 32);
 
@@ -250,16 +268,23 @@ venc_try_fmt_common(struct venus_inst *inst, struct v4l2_format *f)
 	pfmt[0].sizeimage = max(ALIGN(pfmt[0].sizeimage, SZ_4K), sizeimage);
 
 	if (f->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
+		unsigned int visible_stride = pixmp->width;
+
+		if (pixmp->pixelformat == V4L2_PIX_FMT_P010)
+			visible_stride *= 2;
+
 		/*
-		 * MMAP and USERPTR clients submit tightly packed NV12.  IRIS1
-		 * consumes 128-byte-strided rows, so keep the userspace contract
-		 * packed and expand it in-place before queueing the buffer.
+		 * MMAP and USERPTR clients submit tightly packed NV12 or P010.
+		 * IRIS1 consumes 128-byte-aligned NV12 rows or 256-byte-aligned
+		 * P010 rows. Keep the userspace contract packed and expand it
+		 * before queueing the buffer.
 		 */
 		if (IS_IRIS1(inst->core) &&
-		    pixmp->pixelformat == V4L2_PIX_FMT_NV12)
-			pfmt[0].bytesperline = pixmp->width;
+		    (pixmp->pixelformat == V4L2_PIX_FMT_NV12 ||
+		     pixmp->pixelformat == V4L2_PIX_FMT_P010))
+			pfmt[0].bytesperline = visible_stride;
 		else
-			pfmt[0].bytesperline = ALIGN(pixmp->width, 128);
+			pfmt[0].bytesperline = ALIGN(visible_stride, 128);
 	} else {
 		pfmt[0].bytesperline = 0;
 	}
@@ -1221,7 +1246,10 @@ static int venc_init_session(struct venus_inst *inst)
 	else if (ret)
 		return ret;
 
-	ret = venus_helper_set_stride(inst, ALIGN(inst->out_width, 128),
+	ret = venus_helper_set_stride(inst,
+		inst->fmt_out->pixfmt == V4L2_PIX_FMT_P010 ?
+		venc_p010_stride_iris1(inst->out_width) :
+		ALIGN(inst->out_width, 128),
 				      ALIGN(inst->out_height, 32));
 	if (ret)
 		goto deinit;
@@ -1669,18 +1697,21 @@ error:
 	return ret;
 }
 
-static int venc_repack_nv12_iris1(struct venus_inst *inst,
-				  struct vb2_buffer *vb)
+static int venc_repack_raw_iris1(struct venus_inst *inst,
+				struct vb2_buffer *vb)
 {
 	u32 width = inst->out_width;
 	u32 height = inst->out_height;
-	u32 dst_stride = ALIGN(width, 128);
+	u32 visible_stride = width *
+		(inst->fmt_out->pixfmt == V4L2_PIX_FMT_P010 ? 2 : 1);
+	u32 dst_stride = inst->fmt_out->pixfmt == V4L2_PIX_FMT_P010 ?
+		venc_p010_stride_iris1(width) : ALIGN(visible_stride, 128);
 	u32 y_scanlines = ALIGN(height, 32);
 	u32 uv_lines = DIV_ROUND_UP(height, 2);
 	u32 uv_scanlines = ALIGN(uv_lines, 16);
 	u32 visible_lines = height + uv_lines;
 	u32 payload = vb2_get_plane_payload(vb, 0);
-	u32 src_stride = width;
+	u32 src_stride = visible_stride;
 	u32 src_y, src_uv;
 	u32 dst_uv = dst_stride * y_scanlines;
 	u32 required = dst_uv + dst_stride * uv_scanlines;
@@ -1694,13 +1725,13 @@ static int venc_repack_nv12_iris1(struct venus_inst *inst,
 	 * MMAP bytesused describes a source stride larger than the advertised
 	 * visible bytesperline.  Rawvideo clients, on the other hand, submit a
 	 * tightly packed frame.  Recover either layout from the exact payload
-	 * extent before converting it to the IRIS1 layout.
+	 * extent before converting NV12 or P010 to the IRIS1 layout.
 	 */
-	if (payload >= width * visible_lines &&
+	if (payload >= visible_stride * visible_lines &&
 	    !(payload % visible_lines)) {
 		u32 candidate = payload / visible_lines;
 
-		if (candidate >= width && candidate <= dst_stride)
+		if (candidate >= visible_stride && candidate <= dst_stride)
 			src_stride = candidate;
 	}
 
@@ -1718,18 +1749,18 @@ static int venc_repack_nv12_iris1(struct venus_inst *inst,
 	 */
 	for (row = (int)uv_lines - 1; row >= 0; row--) {
 		memmove(vaddr + dst_uv + row * dst_stride,
-			vaddr + src_y + row * src_stride, width);
-		memset(vaddr + dst_uv + row * dst_stride + width, 0,
-		       dst_stride - width);
+			vaddr + src_y + row * src_stride, visible_stride);
+		memset(vaddr + dst_uv + row * dst_stride + visible_stride, 0,
+		       dst_stride - visible_stride);
 	}
 	memset(vaddr + dst_uv + uv_lines * dst_stride, 0,
 	       (uv_scanlines - uv_lines) * dst_stride);
 
 	for (row = (int)height - 1; row >= 0; row--) {
 		memmove(vaddr + row * dst_stride,
-			vaddr + row * src_stride, width);
-		memset(vaddr + row * dst_stride + width, 0,
-		       dst_stride - width);
+			vaddr + row * src_stride, visible_stride);
+		memset(vaddr + row * dst_stride + visible_stride, 0,
+		       dst_stride - visible_stride);
 	}
 	memset(vaddr + height * dst_stride, 0,
 	       (y_scanlines - height) * dst_stride);
@@ -1760,9 +1791,10 @@ static void venc_vb2_buf_queue(struct vb2_buffer *vb)
 
 	if (IS_IRIS1(inst->core) &&
 	    vb->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE &&
-	    inst->fmt_out->pixfmt == V4L2_PIX_FMT_NV12 &&
+	    (inst->fmt_out->pixfmt == V4L2_PIX_FMT_NV12 ||
+	     inst->fmt_out->pixfmt == V4L2_PIX_FMT_P010) &&
 	    vb->memory != VB2_MEMORY_DMABUF) {
-		ret = venc_repack_nv12_iris1(inst, vb);
+		ret = venc_repack_raw_iris1(inst, vb);
 		if (ret) {
 			v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_ERROR);
 			mutex_unlock(&inst->lock);
