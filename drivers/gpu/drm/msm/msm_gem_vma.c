@@ -386,10 +386,19 @@ msm_gem_vma_new(struct drm_gpuvm *gpuvm, struct drm_gem_object *obj,
 		return ERR_PTR(-ENOMEM);
 
 	if (vm->managed) {
+		u64 align = vm->va_pad ? vm->va_pad : PAGE_SIZE;
+
 		BUG_ON(offset != 0);
 		BUG_ON(!obj);  /* NULL mappings not valid for kernel managed VM */
+
+		/*
+		 * Align the iova to @va_pad (64K on A640) so the buffer base is
+		 * itself aligned.  Since drm_mm forces each node to an aligned
+		 * start, buffers never share a 64K slot, and a CCU read at
+		 * (base & ~(va_pad - 1)) == base lands inside the mapped buffer.
+		 */
 		ret = drm_mm_insert_node_in_range(&vm->mm, &vma->node,
-						obj->size, PAGE_SIZE, 0,
+						obj->size, align, 0,
 						range_start, range_end, 0);
 
 		if (ret)

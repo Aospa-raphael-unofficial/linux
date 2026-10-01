@@ -184,6 +184,14 @@ int adreno_zap_shader_load(struct msm_gpu *gpu, u32 pasid)
 	return zap_shader_load_mdt(gpu, adreno_gpu->info->zapfw, pasid);
 }
 
+void adreno_gem_vm_set_va_pad(struct msm_gpu *gpu, struct drm_gpuvm *vm)
+{
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+
+	if (adreno_gpu->info->quirks & ADRENO_QUIRK_VA_64K_PAD)
+		to_msm_vm(vm)->va_pad = SZ_64K;
+}
+
 struct drm_gpuvm *
 adreno_create_vm(struct msm_gpu *gpu,
 		 struct platform_device *pdev)
@@ -219,6 +227,9 @@ adreno_iommu_create_vm(struct msm_gpu *gpu,
 
 	vm = msm_gem_vm_create(gpu->dev, mmu, "gpu", start & GENMASK_ULL(48, 0),
 			       size, true);
+
+	if (!IS_ERR(vm))
+		adreno_gem_vm_set_va_pad(gpu, vm);
 
 	if (IS_ERR(vm) && !IS_ERR(mmu))
 		mmu->funcs->destroy(mmu);
