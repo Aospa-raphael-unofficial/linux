@@ -10,9 +10,9 @@
 #include <dt-bindings/leds/common.h>
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
+#include <dt-bindings/sound/qcom,q6asm.h>
 #include <dt-bindings/firmware/qcom,scm.h>
 #include <dt-bindings/usb/pd.h>
-#include <dt-bindings/sound/qcom,q6asm.h>
 #include "sm8150.dtsi"
 #include "sm8150-wcd9340.dtsi"
 #include "pm8150.dtsi"
@@ -50,13 +50,21 @@
 		wifi0 = &wifi;
 	};
 
-
 	battery: battery {
 		compatible = "simple-battery";
+
+		device-chemistry = "lithium-ion-polymer";
+
+		/*
+		 * Keep the maximum charging current conservative for now,
+		 * until we have thermal handling in the charging driver.
+		 * Downstream seems to have a upper limit of 3A.
+		 */
+		constant-charge-current-max-microamp = <1500000>;
+
 		charge-full-design-microamp-hours = <4000000>;
-		constant-charge-current-max-microamp = <2000000>;
-		constant-charge-voltage-max-microvolt = <4400000>;
 		voltage-min-design-microvolt = <3400000>;
+		voltage-max-design-microvolt = <4400000>;
 	};
 
 	chosen {
@@ -135,15 +143,15 @@
 		regulator-max-microvolt = <6000000>;
 	};
 
-
-
 	vreg_tp_1p8: regulator-tp-1p8 {
 		compatible = "regulator-fixed";
 		regulator-name = "vreg_tp_1p8";
 		regulator-min-microvolt = <1800000>;
 		regulator-max-microvolt = <1800000>;
-		gpio = <&tlmm 130 GPIO_ACTIVE_HIGH>;
+		regulator-boot-on;
 		enable-active-high;
+		gpio = <&tlmm 100 GPIO_ACTIVE_HIGH>;
+		startup-delay-us = <5000>;
 	};
 
 	vreg_tp_3p3: regulator-tp-3p3 {
@@ -151,8 +159,10 @@
 		regulator-name = "vreg_tp_3p3";
 		regulator-min-microvolt = <3300000>;
 		regulator-max-microvolt = <3300000>;
-		gpio = <&tlmm 131 GPIO_ACTIVE_HIGH>;
+		regulator-boot-on;
 		enable-active-high;
+		gpio = <&tlmm 98 GPIO_ACTIVE_HIGH>;
+		startup-delay-us = <5000>;
 	};
 
 	reserved-memory {
@@ -596,9 +606,6 @@
 	firmware-name = "qcom/sm8150/Xiaomi/raphael/a640_zap.mbn";
 };
 
-
-
-
 &i2c1 {
 	clock-frequency = <400000>;
 	status = "okay";
@@ -634,10 +641,10 @@
 };
 
 &ipa {
-	qcom,gsi-loader = "self";
 	status = "okay";
-	memory-region = <&ipa_fw_mem>, <&ipa_gsi_mem>;
-	firmware-name = "qcom/sm8150/raphael/ipa_fws.mbn";
+	qcom,gsi-loader = "self";
+	memory-region = <&ipa_fw_mem>;
+	firmware-name = "qcom/sm8150/Xiaomi/raphael/ipa_fws.mbn";
 };
 
 &mdss {
@@ -691,21 +698,17 @@
 	};
 };
 
-
-
-
-
 &pm8150_rtc {
+	nvmem-cells = <&rtc_offset>;
+	nvmem-cell-names = "offset";
 	status = "okay";
 };
 
 &pm8150_sdam_2 {
 	status = "okay";
 
-	pm8150_sdam_nvmem: nvmem-cells {
-		compatible = "qcom,spmi-sdam-nvmem";
-		#address-cells = <1>;
-		#size-cells = <1>;
+	rtc_offset: rtc-offset@bc {
+		reg = <0xbc 0x4>;
 	};
 };
 
@@ -716,8 +719,7 @@
 
 &pm8150b_fg {
 	monitored-battery = <&battery>;
-	nvmem-cells = <&pm8150_sdam_nvmem>;
-	nvmem-cell-names = "sdam";
+	power-supplies = <&pm8150b_charger>;
 	status = "okay";
 };
 
@@ -828,56 +830,28 @@
 	linux,code = <KEY_VOLUMEDOWN>;
 };
 
+&q6afedai {
+	dai@22 {
+		reg = <QUATERNARY_MI2S_RX>;
+		qcom,sd-lines = <0>;  /* Use SD0 (GPIO 139) for playback */
+	};
+};
 
+&q6asmdai {
+	dai@0 {
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA1>;
+	};
 
+	dai@1 {
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA2>;
+	};
+};
+
+&qupv3_id_0 {
+	status = "okay";
+};
 
 &qupv3_id_1 {
-	status = "okay";
-};
-
-&q6afedai {
-	dai@22 {
-		reg = <QUATERNARY_MI2S_RX>;
-		qcom,sd-lines = <0>;  /* Use SD0 (GPIO 139) for playback */
-	};
-};
-
-&q6asmdai {
-	dai@0 {
-		reg = <MSM_FRONTEND_DAI_MULTIMEDIA1>;
-	};
-
-	dai@1 {
-		reg = <MSM_FRONTEND_DAI_MULTIMEDIA2>;
-	};
-};
-
-&qupv3_id_0 {
-	status = "okay";
-};
-
-&qupv3_id_2 {
-	status = "okay";
-};
-
-&q6afedai {
-	dai@22 {
-		reg = <QUATERNARY_MI2S_RX>;
-		qcom,sd-lines = <0>;  /* Use SD0 (GPIO 139) for playback */
-	};
-};
-
-&q6asmdai {
-	dai@0 {
-		reg = <MSM_FRONTEND_DAI_MULTIMEDIA1>;
-	};
-
-	dai@1 {
-		reg = <MSM_FRONTEND_DAI_MULTIMEDIA2>;
-	};
-};
-
-&qupv3_id_0 {
 	status = "okay";
 };
 
@@ -901,20 +875,16 @@
 };
 
 &remoteproc_slpi {
-	firmware-name = "qcom/sm8150/Xiaomi/raphael/slpi.mbn";
 	status = "okay";
+	firmware-name = "qcom/sm8150/Xiaomi/raphael/slpi.mbn";
 
 	glink-edge {
 		fastrpc {
 			memory-region = <&fastrpc_mem>;
-			qcom,vmids = <QCOM_SCM_VMID_HLOS>,
-				     <QCOM_SCM_VMID_SSC_Q6>,
-				     <QCOM_SCM_VMID_ADSP_Q6>;
+			qcom,vmids = <QCOM_SCM_VMID_HLOS QCOM_SCM_VMID_SSC_Q6 QCOM_SCM_VMID_ADSP_Q6>;
 		};
 	};
 };
-
-
 
 &sound {
 	compatible = "qcom,sm8150-sndcard";
@@ -1189,21 +1159,80 @@
 	};
 
 	qup_uart13_default: qup-uart13-default-state {
-		pins = "gpio43", "gpio44", "gpio45", "gpio46";
-		function = "qup13";
-		drive-strength = <2>;
-		bias-disable;
+		cts-pins {
+			pins = "gpio43";
+			function = "qup13";
+			drive-strength = <2>;
+			bias-bus-hold;
+		};
+
+		rts-pins {
+			pins = "gpio44";
+			function = "qup13";
+			drive-strength = <2>;
+			bias-disable;
+		};
+
+		tx-pins {
+			pins = "gpio45";
+			function = "qup13";
+			drive-strength = <2>;
+			bias-disable;
+		};
+
+		rx-pins {
+			pins = "gpio46";
+			function = "qup13";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
 	};
 
 	qup_uart13_sleep: qup-uart13-sleep-state {
-		pins = "gpio43", "gpio44", "gpio45", "gpio46";
-		function = "qup13";
-		drive-strength = <2>;
+		cts-pins {
+			pins = "gpio43";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-bus-hold;
+		};
+
+		rts-pins {
+			pins = "gpio44";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-down;
+		};
+
+		tx-pins {
+			pins = "gpio45";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+
+		rx-pins {
+			pins = "gpio46";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+	};
+
+	sw_ctrl_default: sw-ctrl-default-state {
+		pins = "gpio50";
+		function = "gpio";
 		bias-pull-down;
 	};
 
+	/* Touch panel pins */
+	tp_active: tp-active-state {
+		pins = "gpio122", "gpio54";
+		function = "gpio";
+		drive-strength = <16>;
+		bias-pull-up;
+	};
 
-
+	/* Speaker I2S pins */
 	quat_mi2s_active: quat-mi2s-active-state {
 		pins = "gpio137", "gpio138";
 		function = "qua_mi2s";
@@ -1225,25 +1254,6 @@
 		drive-strength = <8>;
 		bias-disable;
 	};
-
-	sw_ctrl_default: sw-ctrl-default-state {
-		pins = "gpio50";
-		function = "gpio";
-		bias-pull-down;
-	};
-
-	tp_active: tp-active-state {
-		pins = "gpio122";
-		function = "gpio";
-		drive-strength = <8>;
-		bias-pull-up;
-	};
-
-	/* Touch panel pins */
-
-	/* Speaker I2S pins */
-
-
 };
 
 &uart2 {
@@ -1251,6 +1261,13 @@
 };
 
 &uart13 {
+	/delete-property/ interrupts;
+	interrupts-extended = <&intc GIC_SPI 585 IRQ_TYPE_LEVEL_HIGH>,
+			      <&tlmm 46 IRQ_TYPE_EDGE_FALLING>;
+	pinctrl-0 = <&qup_uart13_default>;
+	pinctrl-1 = <&qup_uart13_sleep>;
+	pinctrl-names = "default", "sleep";
+
 	status = "okay";
 
 	bluetooth: bluetooth {
@@ -1260,14 +1277,8 @@
 		vddxo-supply = <&vreg_pmu_xo>;
 		vddrf-supply = <&vreg_pmu_rf>;
 		vddch0-supply = <&vreg_pmu_ch0>;
-		max-speed = <3200000>;
-
-		pinctrl-0 = <&qup_uart13_default>;
-		pinctrl-1 = <&qup_uart13_sleep>;
-		pinctrl-names = "default", "sleep";
 	};
 };
-
 
 &ufs_mem_hc {
 	status = "okay";
@@ -1313,10 +1324,8 @@
 	status = "okay";
 };
 
-
-
 &venus {
-	firmware-name = "qcom/sm8150/raphael/venus.mbn";
+	firmware-name = "qcom/sm8150/Xiaomi/raphael/venus.mbn";
 	status = "okay";
 };
 
