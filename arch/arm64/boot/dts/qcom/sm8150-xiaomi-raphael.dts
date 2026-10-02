@@ -900,6 +900,20 @@
 	firmware-name = "qcom/sm8150/Xiaomi/raphael/modem.mbn";
 };
 
+&remoteproc_slpi {
+	firmware-name = "qcom/sm8150/Xiaomi/raphael/slpi.mbn";
+	status = "okay";
+
+	glink-edge {
+		fastrpc {
+			memory-region = <&fastrpc_mem>;
+			qcom,vmids = <QCOM_SCM_VMID_HLOS>,
+				     <QCOM_SCM_VMID_SSC_Q6>,
+				     <QCOM_SCM_VMID_ADSP_Q6>;
+		};
+	};
+};
+
 
 
 &sound {
