@@ -1315,6 +1315,11 @@
 
 
 
+&venus {
+	firmware-name = "qcom/sm8150/raphael/venus.mbn";
+	status = "okay";
+};
+
 &wcd9340 {
 	reset-gpios = <&tlmm 143 GPIO_ACTIVE_HIGH>;
 	vdd-buck-sido-supply = <&vreg_s4a_1p8>;
