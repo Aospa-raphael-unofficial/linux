@@ -230,20 +230,21 @@ static int sm8150_dai_init(struct snd_soc_pcm_runtime *rtd)
 
 	switch (cpu_dai->id) {
 	case SLIMBUS_0_RX ... SLIMBUS_6_TX:
-		/* setup SLIM channel map once */
-		if (pdata->slim_port_setup)
+		if (!link->no_pcm)
 			return 0;
 
 		/* Send CDC SLIMBUS slave config to DSP (required by Raphael FW) */
-		for_each_rtd_codec_dais(rtd, i, codec_dai) {
-			u64 eaddr = 0;
-			/* codec component dev's parent is the SLIMbus device */
-			struct device *parent = codec_dai->component->dev->parent;
-			if (parent) {
-				struct slim_device *slim = to_slim_device(parent);
-				memcpy(&eaddr, &slim->e_addr, sizeof(slim->e_addr));
+		if (!pdata->slim_port_setup) {
+			for_each_rtd_codec_dais(rtd, i, codec_dai) {
+				u64 eaddr = 0;
+				/* codec component dev's parent is the SLIMbus device */
+				struct device *parent = codec_dai->component->dev->parent;
+				if (parent) {
+					struct slim_device *slim = to_slim_device(parent);
+					memcpy(&eaddr, &slim->e_addr, sizeof(slim->e_addr));
+				}
+				q6afe_send_cdc_slimbus_slave_cfg(cpu_dai->dev, eaddr);
 			}
-			q6afe_send_cdc_slimbus_slave_cfg(cpu_dai->dev, eaddr);
 		}
 
 		for_each_rtd_codec_dais(rtd, i, codec_dai) {
@@ -259,24 +260,26 @@ static int sm8150_dai_init(struct snd_soc_pcm_runtime *rtd)
 					       WCD934X_DEFAULT_MCLK_RATE,
 					       SNDRV_PCM_STREAM_PLAYBACK);
 
-			rval = snd_soc_component_set_jack(codec_dai->component,
-							  &pdata->jack, NULL);
-			if (rval != 0 && rval != -ENOTSUPP) {
-				dev_warn(card->dev, "Failed to set jack: %d\n", rval);
-				return rval;
+			if (!pdata->slim_port_setup) {
+				rval = snd_soc_component_set_jack(codec_dai->component,
+								  &pdata->jack, NULL);
+				if (rval != 0 && rval != -ENOTSUPP) {
+					dev_warn(card->dev, "Failed to set jack: %d\n", rval);
+					return rval;
+				}
 			}
 		}
 
 		/* Also set channel map on the CPU DAI so q6afe_slim_port_prepare
 		 * gets correct num_channels and ch_mapping
-		 * Use 2 channels (stereo) for SLIMBUS playback
+		 * Use 2 channels (stereo) for SLIMBUS
 		 */
 		{
 			unsigned int slim_rx_ch[2] = {144, 145};
 			unsigned int slim_tx_ch[2] = {128, 129};
 			int ret;
 
-			dev_info(card->dev, "Setting CPU DAI channel map: tx=2 rx=2\n");
+			dev_info(card->dev, "Setting CPU DAI channel map (%s): tx=2 rx=2\n", link->name);
 			ret = snd_soc_dai_set_channel_map(cpu_dai,
 						    2, slim_tx_ch,
 						    2, slim_rx_ch);
