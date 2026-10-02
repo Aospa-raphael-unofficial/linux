@@ -3830,7 +3830,6 @@
 			#address-cells = <2>;
 			#size-cells = <2>;
 			ranges;
-			dma-ranges = <0 0 0 0 0 0x25800000>;
 
 			clocks = <&gcc GCC_VIDEO_AXIC_CLK>,
 				 <&gcc GCC_VIDEO_AXI0_CLK>,
