@@ -755,6 +755,14 @@
 			no-map;
 		};
 
+		venus_iova: venus-iova {
+			iommu-addresses = <&venus 0 0 0 0x25800000>;
+		};
+
+		venus_secure_nonpixel_iova: venus-secure-nonpixel-iova {
+			iommu-addresses = <&venus_secure_nonpixel 0 0 0 0x1000000>;
+		};
+
 		venus_mem: memory@96e00000 {
 			reg = <0x0 0x96e00000 0x0 0x500000>;
 			no-map;
@@ -3733,8 +3741,6 @@
 				phys = <&usb_1_hsphy>, <&usb_1_qmpphy QMP_USB43DP_USB3_PHY>;
 				phy-names = "usb2-phy", "usb3-phy";
 
-				usb-role-switch;
-
 				ports {
 					#address-cells = <1>;
 					#size-cells = <0>;
@@ -3817,6 +3823,90 @@
 			};
 		};
 
+		venus: video-codec@aa00000 {
+			compatible = "qcom,sm8150-venus";
+			reg = <0 0x0aa00000 0 0x100000>;
+			interrupts = <GIC_SPI 174 IRQ_TYPE_LEVEL_HIGH>;
+			#address-cells = <2>;
+			#size-cells = <2>;
+			ranges;
+
+			clocks = <&gcc GCC_VIDEO_AXIC_CLK>,
+				 <&gcc GCC_VIDEO_AXI0_CLK>,
+				 <&gcc GCC_VIDEO_AXI1_CLK>,
+				 <&videocc VIDEO_CC_MVSC_CORE_CLK>,
+				 <&videocc VIDEO_CC_MVS0_CORE_CLK>,
+				 <&videocc VIDEO_CC_MVS1_CORE_CLK>,
+				 <&videocc VIDEO_CC_IRIS_AHB_CLK>;
+			clock-names = "iface", "vcodec0_bus", "cvp_bus", "core",
+				      "vcodec0_core", "cvp_core", "bus";
+
+			power-domains = <&videocc VENUS_GDSC>,
+					<&videocc VCODEC0_GDSC>,
+					<&videocc VCODEC1_GDSC>,
+					<&rpmhpd SM8150_MMCX>;
+			power-domain-names = "venus", "vcodec0", "cvp", "mmcx";
+			operating-points-v2 = <&venus_opp_table>;
+
+			resets = <&gcc GCC_VIDEO_AXIC_CLK_BCR>,
+				 <&videocc VIDEO_CC_MVSC_CORE_CLK_BCR>,
+				 <&gcc GCC_VIDEO_AXI0_CLK_BCR>,
+				 <&gcc GCC_VIDEO_AXI1_CLK_BCR>;
+			reset-names = "bus", "core", "vcodec0", "cvp";
+
+			interconnects = <&mmss_noc MASTER_VIDEO_P0 0 &mc_virt SLAVE_EBI_CH0 0>,
+					<&gem_noc MASTER_AMPSS_M0 0 &config_noc SLAVE_VENUS_CFG 0>;
+			interconnect-names = "video-mem", "cpu-cfg";
+
+			/* V2 SIDs match the V2 rates implemented by videocc-sm8150. */
+			iommus = <&apps_smmu 0x2300 0x60>;
+			memory-region = <&venus_mem>, <&venus_iova>;
+			memory-region-names = "firmware", "iova";
+
+			status = "disabled";
+
+			venus_secure_nonpixel: secure-non-pixel {
+				compatible = "qcom,venus-secure-context";
+				iommus = <&apps_smmu 0x2304 0x60>;
+				qcom,secure-vmid = <QCOM_SCM_VMID_CP_NON_PIXEL>;
+				memory-region = <&venus_secure_nonpixel_iova>;
+			};
+
+			venus_opp_table: opp-table {
+				compatible = "operating-points-v2";
+
+				opp-200000000 {
+					opp-hz = /bits/ 64 <200000000>;
+					required-opps = <&rpmhpd_opp_min_svs>;
+				};
+
+				opp-240000000 {
+					opp-hz = /bits/ 64 <240000000>;
+					required-opps = <&rpmhpd_opp_low_svs>;
+				};
+
+				opp-338000000 {
+					opp-hz = /bits/ 64 <338000000>;
+					required-opps = <&rpmhpd_opp_svs>;
+				};
+
+				opp-365000000 {
+					opp-hz = /bits/ 64 <365000000>;
+					required-opps = <&rpmhpd_opp_svs_l1>;
+				};
+
+				opp-444000000 {
+					opp-hz = /bits/ 64 <444000000>;
+					required-opps = <&rpmhpd_opp_nom>;
+				};
+
+				opp-533000000 {
+					opp-hz = /bits/ 64 <533000000>;
+					required-opps = <&rpmhpd_opp_turbo>;
+				};
+			};
+		};
+
 		videocc: clock-controller@ab00000 {
 			compatible = "qcom,sm8150-videocc";
 			reg = <0 0x0ab00000 0 0x10000>;
@@ -3871,6 +3961,8 @@
 			#interrupt-cells = <1>;
 
 			iommus = <&apps_smmu 0x800 0x420>;
+
+			resets = <&gcc DISP_CC_MDSS_CORE_BCR>;
 
 			status = "disabled";
 

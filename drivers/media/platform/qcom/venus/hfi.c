@@ -217,8 +217,11 @@ int hfi_session_init(struct venus_inst *inst, u32 pixfmt)
 		return ret;
 
 	ret = wait_session_msg(inst);
-	if (ret)
+	if (ret) {
+		if (ret == -ETIMEDOUT)
+			venus_hfi_session_init_timeout(core);
 		return ret;
+	}
 
 	inst->state = INST_INIT;
 

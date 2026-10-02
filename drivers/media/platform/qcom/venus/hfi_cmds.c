@@ -267,6 +267,8 @@ int pkt_session_etb_decoder(struct hfi_session_empty_buffer_compressed_pkt *pkt,
 	if (!cookie)
 		return -EINVAL;
 
+	memset(pkt, 0, sizeof(*pkt));
+
 	pkt->shdr.hdr.size = sizeof(*pkt);
 	pkt->shdr.hdr.pkt_type = HFI_CMD_SESSION_EMPTY_BUFFER;
 	pkt->shdr.session_id = hash32_ptr(cookie);
@@ -290,6 +292,8 @@ int pkt_session_etb_encoder(
 {
 	if (!cookie || !in_frame->device_addr)
 		return -EINVAL;
+
+	memset(pkt, 0, sizeof(*pkt));
 
 	pkt->shdr.hdr.size = sizeof(*pkt);
 	pkt->shdr.hdr.pkt_type = HFI_CMD_SESSION_EMPTY_BUFFER;
@@ -315,6 +319,8 @@ int pkt_session_ftb(struct hfi_session_fill_buffer_pkt *pkt, void *cookie,
 {
 	if (!cookie || !out_frame || !out_frame->device_addr)
 		return -EINVAL;
+
+	memset(pkt, 0, sizeof(*pkt));
 
 	pkt->shdr.hdr.size = sizeof(*pkt);
 	pkt->shdr.hdr.pkt_type = HFI_CMD_SESSION_FILL_BUFFER;
@@ -433,6 +439,13 @@ static int pkt_session_set_property_1x(struct hfi_session_set_property_pkt *pkt,
 		pkt->shdr.hdr.size += sizeof(u32) + sizeof(*frate);
 		break;
 	}
+	case HFI_PROPERTY_CONFIG_VENC_VBV_HRD_BUF_SIZE: {
+		u32 *in = pdata;
+
+		pkt->data[1] = *in;
+		pkt->shdr.hdr.size += sizeof(u32) * 2;
+		break;
+	}
 	case HFI_PROPERTY_PARAM_UNCOMPRESSED_FORMAT_SELECT: {
 		struct hfi_uncompressed_format_select *in = pdata;
 		struct hfi_uncompressed_format_select *hfi = prop_data;
@@ -459,7 +472,8 @@ static int pkt_session_set_property_1x(struct hfi_session_set_property_pkt *pkt,
 		break;
 	}
 	case HFI_PROPERTY_PARAM_BUFFER_COUNT_ACTUAL: {
-		struct hfi_buffer_count_actual *in = pdata, *count = prop_data;
+		struct hfi_buffer_count_actual *in = pdata;
+		struct hfi_buffer_count_actual_1xx *count = prop_data;
 
 		count->count_actual = in->count_actual;
 		count->type = in->type;
@@ -472,6 +486,19 @@ static int pkt_session_set_property_1x(struct hfi_session_set_property_pkt *pkt,
 		sz->size = in->size;
 		sz->type = in->type;
 		pkt->shdr.hdr.size += sizeof(u32) + sizeof(*sz);
+		break;
+	}
+	case HFI_PROPERTY_PARAM_INDEX_EXTRADATA:
+	case HFI_PROPERTY_PARAM_VDEC_INTERLACE_VIDEO_EXTRADATA:
+	case HFI_PROPERTY_PARAM_VDEC_MPEG2_SEQDISP_EXTRADATA:
+	case HFI_PROPERTY_PARAM_VDEC_VPX_COLORSPACE_EXTRADATA:
+	case HFI_PROPERTY_PARAM_VDEC_UBWC_CR_STAT_INFO_EXTRADATA: {
+		struct hfi_index_extradata_config *in = pdata;
+		struct hfi_index_extradata_config *extra = prop_data;
+
+		extra->enable = in->enable;
+		extra->index_extra_data_id = in->index_extra_data_id;
+		pkt->shdr.hdr.size += sizeof(u32) + sizeof(*extra);
 		break;
 	}
 	case HFI_PROPERTY_PARAM_BUFFER_DISPLAY_HOLD_COUNT_ACTUAL: {
@@ -626,7 +653,10 @@ static int pkt_session_set_property_1x(struct hfi_session_set_property_pkt *pkt,
 			/* Profile not supported, falling back to high */
 			pl->profile = HFI_H264_PROFILE_HIGH;
 
-		if (!pl->level)
+		if (pl->level == ~0U)
+			/* Host-only IRIS1 H.264 auto-level marker. */
+			pl->level = 0;
+		else if (!pl->level)
 			/* Level not supported, falling back to 1 */
 			pl->level = 1;
 
@@ -899,6 +929,8 @@ static int pkt_session_set_property_1x(struct hfi_session_set_property_pkt *pkt,
 		pkt->shdr.hdr.size += sizeof(u32) + sizeof(*en);
 		break;
 	}
+	case HFI_PROPERTY_PARAM_VENC_LOW_LATENCY_MODE:
+	case HFI_PROPERTY_PARAM_VENC_BITRATE_SAVINGS:
 	case HFI_PROPERTY_PARAM_VENC_PRESERVE_TEXT_QUALITY: {
 		struct hfi_enable *in = pdata, *en = prop_data;
 
@@ -1214,7 +1246,7 @@ pkt_session_set_property_4xx(struct hfi_session_set_property_pkt *pkt,
 
 		count->count_actual = in->count_actual;
 		count->type = in->type;
-		count->count_min_host = in->count_actual;
+		count->count_min_host = in->count_min_host;
 		pkt->shdr.hdr.size += sizeof(u32) + sizeof(*count);
 		break;
 	}
@@ -1223,6 +1255,13 @@ pkt_session_set_property_4xx(struct hfi_session_set_property_pkt *pkt,
 
 		wm->video_work_mode = in->video_work_mode;
 		pkt->shdr.hdr.size += sizeof(u32) + sizeof(*wm);
+		break;
+	}
+	case HFI_PROPERTY_PARAM_WORK_ROUTE: {
+		struct hfi_video_work_route *in = pdata, *wr = prop_data;
+
+		wr->video_work_route = in->video_work_route;
+		pkt->shdr.hdr.size += sizeof(u32) + sizeof(*wr);
 		break;
 	}
 	case HFI_PROPERTY_CONFIG_VIDEOCORES_USAGE: {
@@ -1332,13 +1371,6 @@ pkt_session_set_property_6xx(struct hfi_session_set_property_pkt *pkt,
 
 		cq->frame_quality = in->frame_quality;
 		pkt->shdr.hdr.size += sizeof(u32) + sizeof(*cq);
-		break;
-	}
-	case HFI_PROPERTY_PARAM_WORK_ROUTE: {
-		struct hfi_video_work_route *in = pdata, *wr = prop_data;
-
-		wr->video_work_route = in->video_work_route;
-		pkt->shdr.hdr.size += sizeof(u32) + sizeof(*wr);
 		break;
 	}
 	default:

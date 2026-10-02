@@ -399,6 +399,8 @@ static int venc_op_s_ctrl(struct v4l2_ctrl *ctrl)
 		return -EINVAL;
 	}
 
+	venc_mark_config_dirty(inst);
+
 	return 0;
 }
 

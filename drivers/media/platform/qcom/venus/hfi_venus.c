@@ -473,7 +473,11 @@ static int venus_boot_core(struct venus_hfi_device *hdev)
 	void __iomem *wrapper_base = hdev->core->wrapper_base;
 	int ret = 0;
 
-	if (IS_IRIS2(hdev->core) || IS_IRIS2_1(hdev->core)) {
+	if (IS_IRIS1(hdev->core)) {
+		mask_val = readl(wrapper_base + WRAPPER_INTR_MASK);
+		mask_val &= ~(WRAPPER_INTR_MASK_A2HWD_BASK |
+			      WRAPPER_INTR_MASK_A2HCPU_MASK);
+	} else if (IS_IRIS2(hdev->core) || IS_IRIS2_1(hdev->core)) {
 		mask_val = readl(wrapper_base + WRAPPER_INTR_MASK);
 		mask_val &= ~(WRAPPER_INTR_MASK_A2HWD_BASK_V6 |
 			      WRAPPER_INTR_MASK_A2HCPU_MASK);
@@ -549,6 +553,12 @@ static int venus_run(struct venus_hfi_device *hdev)
 	if (hdev->sfr.da)
 		writel(hdev->sfr.da, cpu_cs_base + SFR_ADDR);
 
+	if (IS_IRIS1(hdev->core)) {
+		writel(hdev->ifaceq_table.da, cpu_cs_base + CPU_CS_DSP_QTBL_ADDR);
+		writel(hdev->ifaceq_table.da, cpu_cs_base + CPU_CS_DSP_UC_REGION_ADDR);
+		writel(SHARED_QSIZE, cpu_cs_base + CPU_CS_DSP_UC_REGION_SIZE);
+	}
+
 	ret = venus_boot_core(hdev);
 	if (ret) {
 		dev_err(dev, "failed to reset venus core\n");
@@ -571,7 +581,8 @@ static int venus_halt_axi(struct venus_hfi_device *hdev)
 	u32 mask_val;
 	int ret;
 
-	if (IS_AR50_LITE(hdev->core))
+	/* VPU5 powers down after the firmware/SCM suspend handshake. */
+	if (IS_IRIS1(hdev->core) || IS_AR50_LITE(hdev->core))
 		return 0;
 
 	if (IS_IRIS2(hdev->core) || IS_IRIS2_1(hdev->core)) {
@@ -947,6 +958,7 @@ static int venus_sys_set_default_properties(struct venus_hfi_device *hdev)
 {
 	struct device *dev = hdev->core->dev;
 	const struct venus_resources *res = hdev->core->res;
+	bool fw_low_power = venus_fw_low_power_mode && !IS_IRIS1(hdev->core);
 	int ret;
 
 	ret = venus_sys_set_debug(hdev, venus_fw_debug);
@@ -960,10 +972,15 @@ static int venus_sys_set_default_properties(struct venus_hfi_device *hdev)
 			dev_warn(dev, "setting idle response ON failed (%d)\n", ret);
 	}
 
-	ret = venus_sys_set_power_control(hdev, venus_fw_low_power_mode);
+	/*
+	 * IRIS1 keeps the video/CVP domains in software control. Do not
+	 * advertise autonomous power collapse without the matching GDSC
+	 * handoff. Host PC_PREP and secure runtime suspend remain separate.
+	 */
+	ret = venus_sys_set_power_control(hdev, fw_low_power);
 	if (ret)
-		dev_warn(dev, "setting hw power collapse ON failed (%d)\n",
-			 ret);
+		dev_warn(dev, "setting hw power collapse %s failed (%d)\n",
+			 fw_low_power ? "ON" : "OFF", ret);
 
 	/* For specific venus core, it is mandatory to set the UBWC configuration */
 	if (res->ubwc_conf) {
@@ -1218,6 +1235,42 @@ static int venus_core_trigger_ssr(struct venus_core *core, u32 trigger_type)
 		return ret;
 
 	return venus_iface_cmdq_write(hdev, &pkt, false);
+}
+
+/* Only used after a failed IRIS1 session-init wait, never to change state. */
+void venus_hfi_session_init_timeout(struct venus_core *core)
+{
+	struct venus_hfi_device *hdev = to_hfi_priv(core);
+	struct hfi_queue_header *qhdr;
+	unsigned int i;
+
+	if (!IS_IRIS1(core) || !hdev)
+		return;
+
+	mutex_lock(&hdev->lock);
+	dev_err_ratelimited(core->dev,
+			    "IRIS1 session-init timeout: state=%u powered=%u suspended=%u\n",
+			    hdev->state, hdev->power_enabled, hdev->suspended);
+
+	if (hdev->power_enabled && !hdev->suspended)
+		dev_err_ratelimited(core->dev,
+				    "IRIS1 status: ctrl=%#x cpu=%#x irq=%#x mask=%#x\n",
+				    readl(core->cpu_cs_base + CPU_CS_SCIACMDARG0),
+				    readl(core->wrapper_base + WRAPPER_CPU_STATUS),
+				    readl(core->wrapper_base + WRAPPER_INTR_STATUS),
+				    readl(core->wrapper_base + WRAPPER_INTR_MASK));
+
+	/* Firmware may update these fields while this snapshot is read. */
+	for (i = IFACEQ_CMD_IDX; i <= IFACEQ_MSG_IDX; i++) {
+		qhdr = hdev->queues[i].qhdr;
+		if (!qhdr)
+			continue;
+		dev_err_ratelimited(core->dev,
+				    "IRIS1 q%u: rd=%u wr=%u rx_req=%u tx_req=%u\n", i,
+				    READ_ONCE(qhdr->read_idx), READ_ONCE(qhdr->write_idx),
+				    READ_ONCE(qhdr->rx_req), READ_ONCE(qhdr->tx_req));
+	}
+	mutex_unlock(&hdev->lock);
 }
 
 static int venus_session_init(struct venus_inst *inst, u32 session_type,
