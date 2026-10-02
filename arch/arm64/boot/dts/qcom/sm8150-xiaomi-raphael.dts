@@ -125,6 +125,24 @@
 
 
 
+	vreg_tp_1p8: regulator-tp-1p8 {
+		compatible = "regulator-fixed";
+		regulator-name = "vreg_tp_1p8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		gpio = <&tlmm 130 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	vreg_tp_3p3: regulator-tp-3p3 {
+		compatible = "regulator-fixed";
+		regulator-name = "vreg_tp_3p3";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&tlmm 131 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
 	reserved-memory {
 		tz_mem: memory@86200000 {
 			reg = <0x0 0x86200000 0x0 0x5500000>;
@@ -569,6 +587,28 @@
 
 
 
+&i2c19 {
+	clock-frequency = <100000>;
+	status = "okay";
+
+	touchscreen@5d {
+		compatible = "goodix,gt9886";
+		reg = <0x5d>;
+
+		interrupts-extended = <&tlmm 122 IRQ_TYPE_LEVEL_LOW>;
+		reset-gpios = <&tlmm 54 GPIO_ACTIVE_LOW>;
+
+		avdd-supply = <&vreg_tp_3p3>;
+		vddio-supply = <&vreg_tp_1p8>;
+
+		pinctrl-0 = <&tp_active>;
+		pinctrl-names = "default";
+
+		touchscreen-size-x = <1080>;
+		touchscreen-size-y = <2340>;
+	};
+};
+
 &mdss {
 	status = "okay";
 };
@@ -735,6 +775,10 @@
 
 
 &qupv3_id_1 {
+	status = "okay";
+};
+
+&qupv3_id_2 {
 	status = "okay";
 };
 
@@ -962,6 +1006,13 @@
 		pins = "gpio50";
 		function = "gpio";
 		bias-pull-down;
+	};
+
+	tp_active: tp-active-state {
+		pins = "gpio122";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-pull-up;
 	};
 
 	/* Touch panel pins */
