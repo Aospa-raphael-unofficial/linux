@@ -686,6 +686,10 @@
 
 
 
+&pm8150_rtc {
+	status = "okay";
+};
+
 &pm8150_sdam_2 {
 	status = "okay";
 
