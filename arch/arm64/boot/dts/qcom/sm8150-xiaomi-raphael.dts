@@ -44,7 +44,9 @@
 	chassis-type = "handset";
 
 	aliases {
+		bluetooth0 = &bluetooth;
 		serial0 = &uart2;
+		serial1 = &uart13;
 		wifi0 = &wifi;
 	};
 
@@ -1165,6 +1167,20 @@
 		bias-pull-down;
 	};
 
+	qup_uart13_default: qup-uart13-default-state {
+		pins = "gpio43", "gpio44", "gpio45", "gpio46";
+		function = "qup13";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	qup_uart13_sleep: qup-uart13-sleep-state {
+		pins = "gpio43", "gpio44", "gpio45", "gpio46";
+		function = "qup13";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+
 
 
 	quat_mi2s_active: quat-mi2s-active-state {
@@ -1211,6 +1227,24 @@
 
 &uart2 {
 	status = "okay";
+};
+
+&uart13 {
+	status = "okay";
+
+	bluetooth: bluetooth {
+		compatible = "qcom,wcn3998-bt";
+
+		vddio-supply = <&vreg_pmu_io>;
+		vddxo-supply = <&vreg_pmu_xo>;
+		vddrf-supply = <&vreg_pmu_rf>;
+		vddch0-supply = <&vreg_pmu_ch0>;
+		max-speed = <3200000>;
+
+		pinctrl-0 = <&qup_uart13_default>;
+		pinctrl-1 = <&qup_uart13_sleep>;
+		pinctrl-names = "default", "sleep";
+	};
 };
 
 
