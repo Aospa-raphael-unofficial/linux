@@ -40,7 +40,7 @@
 	model = "Xiaomi Redmi K20 Pro";
 	compatible = "xiaomi,raphael", "qcom,sm8150";
 	qcom,msm-id = <QCOM_ID_SM8150 0x20000>; /* SM8150 v2 */
-	qcom,board-id = <40 0>;
+	qcom,board-id = <0x28008 0>;
 	chassis-type = "handset";
 
 	aliases {
@@ -233,13 +233,22 @@
 			no-map;
 		};
 
+		ramoops@a1600000 {
+			compatible = "ramoops";
+			reg = <0x0 0xa1600000 0x0 0x800000>;
+			console-size = <0x400000>;
+			pmsg-size = <0x200000>;
+			ecc-size = <8>;
+			no-map;
+		};
+
 		rmtfs_mem: memory@fe101000 {
 			compatible = "qcom,rmtfs-mem";
 			reg = <0 0xfe101000 0 0x300000>;
 			no-map;
 
 			qcom,client-id = <1>;
-			qcom,vmid = <15>;
+			qcom,vmid = <QCOM_SCM_VMID_MSS_MSA>;
 		};
 	};
 
