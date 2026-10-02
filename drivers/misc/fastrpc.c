@@ -1099,7 +1099,13 @@ static int fastrpc_get_args(u32 kernel, struct fastrpc_invoke_ctx *ctx)
 
 	ctx->msg_sz = pkt_size;
 
-	if (ctx->fl->sctx->sid)
+	/*
+	 * The sensors domain reaches the message buffer directly rather than
+	 * through its context bank, so it needs one from the reserved pool.
+	 * A context-bank mapping leaves it addressing memory that is not
+	 * there, which triggers an SMMU context fault (0x1fffff000) or bus stall.
+	 */
+	if (ctx->fl->sctx->sid && ctx->fl->pd != SENSORS_PD)
 		err = fastrpc_buf_alloc(ctx->fl, dev, pkt_size, &ctx->buf);
 	else
 		err = fastrpc_remote_heap_alloc(ctx->fl, dev, pkt_size, &ctx->buf);
