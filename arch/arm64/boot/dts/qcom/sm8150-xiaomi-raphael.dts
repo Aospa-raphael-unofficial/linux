@@ -633,6 +633,13 @@
 	};
 };
 
+&ipa {
+	qcom,gsi-loader = "self";
+	status = "okay";
+	memory-region = <&ipa_fw_mem>, <&ipa_gsi_mem>;
+	firmware-name = "qcom/sm8150/raphael/ipa_fws.mbn";
+};
+
 &mdss {
 	status = "okay";
 };
