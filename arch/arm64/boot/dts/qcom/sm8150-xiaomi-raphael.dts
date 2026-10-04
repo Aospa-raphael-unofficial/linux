@@ -923,7 +923,6 @@
 		function = "gpio";
 		drive-strength = <8>;
 		bias-disable;
-		power-source = <1>;
 	};
 
 	panel_reset_suspend: panel-reset-suspend-state {
@@ -931,7 +930,6 @@
 		function = "gpio";
 		drive-strength = <2>;
 		bias-pull-down;
-		power-source = <1>;
 	};
 
 	panel_te_pin: panel-te-state {
