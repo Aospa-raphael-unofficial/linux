@@ -195,6 +195,17 @@ struct msm_gem_vma {
 
 	/** @mapped: Is this VMA mapped? */
 	bool mapped;
+
+	/**
+	 * @pad_before: bytes mapped below @base.va.addr as a 64K pad
+	 *
+	 * On A640 the CCU can issue reads at a buffer's base rounded down
+	 * to 64K.  For user-managed (VM_BIND) VMAs the iova is chosen by
+	 * userspace and cannot be moved, so the page(s) below it are
+	 * additionally mapped to the buffer's first page to avoid a CCU
+	 * TRANSLATION fault.  Zero when no pad is present.
+	 */
+	u64 pad_before;
 };
 #define to_msm_vma(x) container_of(x, struct msm_gem_vma, base)
 

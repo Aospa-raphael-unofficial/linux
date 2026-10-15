@@ -42,6 +42,13 @@ struct msm_vm_map_op {
 	 * a submitqueue (ie. process cleanup)
 	 */
 	int queue_id;
+
+	/**
+	 * @sgt_owned: the sg_table is owned by this op and must be freed
+	 * after the op is executed (used for the A640 CCU pad mapping,
+	 * which builds a temporary sg_table for the pad region)
+	 */
+	bool sgt_owned;
 };
 
 /**
@@ -264,6 +271,36 @@ vm_map_op(struct msm_gem_vm *vm, const struct msm_vm_map_op *op)
 				   op->range, op->prot);
 }
 
+/*
+ * Build a small sg_table that repeats @src's first (or last) page @nents
+ * times, so a 64K pad region below a user-managed VMA can be mapped to
+ * real pages without moving the userspace-chosen iova (A640 CCU quirk).
+ */
+static struct sg_table *msm_gem_vma_pad_sgt(struct sg_table *sgt, u64 pad_size,
+					    bool tail)
+{
+	struct scatterlist *src;
+	struct sg_table *pad;
+	unsigned int i, nents = pad_size >> PAGE_SHIFT;
+
+	src = tail ? &sgt->sgl[sgt->nents - 1] : sgt->sgl;
+	pad = kzalloc(sizeof(*pad), GFP_KERNEL);
+	if (!pad)
+		return ERR_PTR(-ENOMEM);
+
+	if (sg_alloc_table(pad, nents, GFP_KERNEL)) {
+		kfree(pad);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	for (i = 0; i < nents; i++) {
+		sg_set_page(&pad->sgl[i], sg_page(src), PAGE_SIZE, src->offset);
+		pad->sgl[i].dma_address = sg_dma_address(src);
+	}
+
+	return pad;
+}
+
 /* Actually unmap memory for the vma */
 void msm_gem_vma_unmap(struct drm_gpuva *vma, const char *reason)
 {
@@ -281,6 +318,15 @@ void msm_gem_vma_unmap(struct drm_gpuva *vma, const char *reason)
 	 */
 	if (!vm->managed)
 		 mutex_lock(&vm->mmu_lock);
+
+	if (!vm->managed && msm_vma->pad_before) {
+		vm_unmap_op(vm, &(struct msm_vm_unmap_op){
+			.iova = vma->va.addr & ~(vm->va_pad - 1),
+			.range = msm_vma->pad_before,
+			.reason = reason,
+		});
+		msm_vma->pad_before = 0;
+	}
 
 	vm_unmap_op(vm, &(struct msm_vm_unmap_op){
 		.iova = vma->va.addr,
@@ -300,6 +346,7 @@ msm_gem_vma_map(struct drm_gpuva *vma, int prot, struct sg_table *sgt)
 {
 	struct msm_gem_vm *vm = to_msm_vm(vma->vm);
 	struct msm_gem_vma *msm_vma = to_msm_vma(vma);
+	struct sg_table *pad_sgt;
 	int ret;
 
 	if (GEM_WARN_ON(!vma->va.addr))
@@ -324,6 +371,37 @@ msm_gem_vma_map(struct drm_gpuva *vma, int prot, struct sg_table *sgt)
 	 * path, as this can cause deadlock in job_run() vs shrinker/
 	 * reclaim.
 	 */
+	/* A640 CCU quirk: also map the 64K-aligned page(s) below a
+	 * user-managed VMA to the buffer's first page, so reads at
+	 * (iova & ~0xffff) cannot hit an unmapped page. */
+	if (!vm->managed && vm->va_pad) {
+		u64 pad_start = vma->va.addr & ~(vm->va_pad - 1);
+
+		msm_vma->pad_before = vma->va.addr - pad_start;
+		if (msm_vma->pad_before) {
+			pad_sgt = msm_gem_vma_pad_sgt(sgt, msm_vma->pad_before,
+						      false);
+			if (IS_ERR(pad_sgt)) {
+				msm_vma->pad_before = 0;
+				ret = PTR_ERR(pad_sgt);
+				goto out;
+			}
+			ret = vm_map_op(vm, &(struct msm_vm_map_op){
+				.iova = pad_start,
+				.range = msm_vma->pad_before,
+				.offset = 0,
+				.sgt = pad_sgt,
+				.prot = prot,
+			});
+			sg_free_table(pad_sgt);
+			kfree(pad_sgt);
+			if (ret) {
+				msm_vma->pad_before = 0;
+				goto out;
+			}
+		}
+	}
+
 	ret = vm_map_op(vm, &(struct msm_vm_map_op){
 		.iova = vma->va.addr,
 		.range = vma->va.range,
@@ -331,6 +409,16 @@ msm_gem_vma_map(struct drm_gpuva *vma, int prot, struct sg_table *sgt)
 		.sgt = sgt,
 		.prot = prot,
 	});
+
+out:
+	if (ret && msm_vma->pad_before) {
+		vm_unmap_op(vm, &(struct msm_vm_unmap_op){
+			.iova = vma->va.addr & ~(vm->va_pad - 1),
+			.range = msm_vma->pad_before,
+			.reason = "map-fail",
+		});
+		msm_vma->pad_before = 0;
+	}
 
 	if (!vm->managed)
 		mutex_unlock(&vm->mmu_lock);
@@ -531,6 +619,41 @@ msm_gem_vm_sm_step_map(struct drm_gpuva_op *op, void *_arg)
 		prot = IOMMU_READ | IOMMU_WRITE;
 	}
 
+	/*
+	 * A640 CCU quirk: also map the 64K-aligned page(s) below a
+	 * user-managed VMA to the buffer's first page, so reads at
+	 * (iova & ~0xffff) cannot hit an unmapped page.
+	 */
+	if (!to_msm_vm(vma->vm)->managed && to_msm_vm(vma->vm)->va_pad && sgt) {
+		u64 pad_start = vma->va.addr & ~(to_msm_vm(vma->vm)->va_pad - 1);
+		u64 pad_before = vma->va.addr - pad_start;
+
+		if (pad_before) {
+			struct sg_table *pad_sgt;
+
+			pad_sgt = msm_gem_vma_pad_sgt(sgt, pad_before, false);
+			if (IS_ERR(pad_sgt))
+				return PTR_ERR(pad_sgt);
+
+			ret = vm_op_enqueue(arg, (struct msm_vm_op){
+				.op = MSM_VM_OP_MAP,
+				.map = {
+					.sgt = pad_sgt,
+					.iova = pad_start,
+					.range = pad_before,
+					.offset = 0,
+					.prot = prot,
+					.queue_id = job->queue->id,
+					.sgt_owned = true,
+				},
+				.obj = vma->gem.obj,
+			});
+
+			if (ret)
+				return ret;
+		}
+	}
+
 	ret = vm_op_enqueue(arg, (struct msm_vm_op){
 		.op = MSM_VM_OP_MAP,
 		.map = {
@@ -680,6 +803,27 @@ msm_gem_vm_sm_step_unmap(struct drm_gpuva_op *op, void *_arg)
 	if (!msm_vma->mapped)
 		goto out_close;
 
+	/* A640 CCU quirk: tear down the pad mapping below the VMA */
+	if (!to_msm_vm(vma->vm)->managed && to_msm_vm(vma->vm)->va_pad) {
+		u64 pad_start = vma->va.addr & ~(to_msm_vm(vma->vm)->va_pad - 1);
+		u64 pad_before = vma->va.addr - pad_start;
+
+		if (pad_before) {
+			ret = vm_op_enqueue(arg, (struct msm_vm_op){
+				.op = MSM_VM_OP_UNMAP,
+				.unmap = {
+					.iova = pad_start,
+					.range = pad_before,
+					.queue_id = job->queue->id,
+				},
+				.obj = vma->gem.obj,
+			});
+
+			if (ret)
+				return ret;
+		}
+	}
+
 	ret = vm_op_enqueue(arg, (struct msm_vm_op){
 		.op = MSM_VM_OP_UNMAP,
 		.unmap = {
@@ -736,6 +880,10 @@ msm_vma_job_run(struct drm_sched_job *_job)
 			 */
 			if (!ret)
 				ret = vm_map_op(vm, &op->map);
+			if (op->map.sgt_owned) {
+				sg_free_table(op->map.sgt);
+				kfree(op->map.sgt);
+			}
 			break;
 		case MSM_VM_OP_UNMAP:
 			vm_unmap_op(vm, &op->unmap);
@@ -1203,6 +1351,18 @@ vm_bind_prealloc_count(struct msm_vm_bind_job *job)
 		/* We only care about MAP/MAP_NULL: */
 		if (op->op == MSM_VM_BIND_OP_UNMAP)
 			continue;
+
+		/* A640 CCU quirk: the 64K pad below a user-managed iova needs
+		 * pgtable pages too (the pad MAP op is not in job->ops). */
+		if (!vm->managed && vm->va_pad && op->obj) {
+			u64 pad_start = op->iova & ~(vm->va_pad - 1);
+			u64 pad_before = op->iova - pad_start;
+
+			if (pad_before)
+				vm->mmu->funcs->prealloc_count(
+					vm->mmu, &job->prealloc,
+					pad_start, pad_before);
+		}
 
 		/*
 		 * If op is contiguous with last in the current range, then

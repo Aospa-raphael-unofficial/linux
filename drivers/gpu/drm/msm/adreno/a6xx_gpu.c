@@ -2390,11 +2390,13 @@ a6xx_create_private_vm(struct msm_gpu *gpu, bool kernel_managed)
 			       adreno_private_vm_size(gpu), kernel_managed);
 
 	/*
-	 * Only kernel-managed VMs allocate iovas in-kernel; user-managed
-	 * (VM_BIND) VMs have userspace pick addresses and must not be padded
-	 * here (it would collide with userspace's packed VA layout).
+	 * Set va_pad on every VM.  Kernel-managed VMs align their iova
+	 * allocations to 64K; user-managed (VM_BIND) VMs keep the
+	 * userspace-chosen address untouched and the pad is realized as
+	 * extra mappings below the VMA in msm_gem_vma_map(), so it cannot
+	 * collide with userspace's packed VA layout.
 	 */
-	if (!IS_ERR(vm) && kernel_managed)
+	if (!IS_ERR(vm))
 		adreno_gem_vm_set_va_pad(gpu, vm);
 
 	return vm;
