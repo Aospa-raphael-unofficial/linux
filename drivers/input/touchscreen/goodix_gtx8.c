@@ -370,15 +370,12 @@ static int goodix_gtx8_power_on(struct goodix_gtx8_core *cd)
 
 	gpiod_set_value_cansleep(cd->reset_gpio, 0);
 
-	/* Vendor waits 5ms for firmware to initialize */
-	usleep_range(5000, 5100);
+	/* Vendor waits 100ms for firmware to fully boot */
+	msleep(GOODIX_GTX8_NORMAL_RESET_DELAY_MS);
 
 	error = goodix_gtx8_dev_confirm(cd);
 	if (error)
 		goto err_dev_reset;
-
-	/* Vendor waits 100ms for firmware to fully boot */
-	msleep(GOODIX_GTX8_NORMAL_RESET_DELAY_MS);
 
 	return 0;
 
