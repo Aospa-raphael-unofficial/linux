@@ -152,6 +152,7 @@
 		enable-active-high;
 		gpio = <&tlmm 100 GPIO_ACTIVE_HIGH>;
 		startup-delay-us = <5000>;
+		regulator-always-on;
 	};
 
 	vreg_tp_3p3: regulator-tp-3p3 {
@@ -163,6 +164,7 @@
 		enable-active-high;
 		gpio = <&tlmm 98 GPIO_ACTIVE_HIGH>;
 		startup-delay-us = <5000>;
+		regulator-always-on;
 	};
 
 	reserved-memory {
